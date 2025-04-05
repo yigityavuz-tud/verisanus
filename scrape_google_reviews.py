@@ -169,6 +169,13 @@ def get_establishments_to_scrape():
     config = load_config()['google_maps']
     df = pd.read_excel('establishments/establishment_base.xlsx')
     
+    # Check if custom_place_ids is specified and not empty
+    if 'custom_place_ids' in config and config['custom_place_ids']:
+        print("Custom place IDs found, overriding scraping criteria...")
+        # Filter only the specified place IDs
+        df = df[df['placeId'].isin(config['custom_place_ids'])]
+        return df
+    
     # Convert googleMapsScrapedAt to datetime, handling empty values
     df['googleMapsScrapedAt'] = pd.to_datetime(df['googleMapsScrapedAt'], errors='coerce')
     if df['googleMapsScrapedAt'].dt.tz is not None:
@@ -451,11 +458,44 @@ def update_establishment_base():
     base_df.to_excel('establishments/establishment_base.xlsx', index=False)
 
 def main():
+    config = load_config()['google_maps']
     establishments = get_establishments_to_scrape()
     if establishments.empty:
         print("No establishments to scrape based on the criteria.")
         return
     
+    # Display selected establishments
+    print("\nSelected establishments for scraping:")
+    print("-" * 80)
+    print(f"{'Title':<50} {'Place ID':<20} {'Review Count':<15}")
+    print("-" * 80)
+    
+    total_reviews = 0
+    for _, establishment in establishments.iterrows():
+        print(f"{establishment['title']:<50} {establishment['placeId']:<20} {establishment['reviewsCount']:<15}")
+        total_reviews += establishment['reviewsCount']
+    
+    print("-" * 80)
+    print(f"Total establishments to scrape: {len(establishments)}")
+    print(f"Total reviews to scrape: {total_reviews}")
+    print("-" * 80)
+    
+    # Check if confirmation is required
+    if config['scraping_criteria'].get('require_confirmation', True):
+        while True:
+            response = input("\nDo you want to proceed with scraping these establishments? (yes/no): ").lower()
+            if response in ['yes', 'y']:
+                print("\nStarting scraping process...")
+                break
+            elif response in ['no', 'n']:
+                print("\nScraping cancelled by user.")
+                return
+            else:
+                print("Please enter 'yes' or 'no'.")
+    else:
+        print("\nStarting scraping process automatically (require_confirmation is set to false)...")
+    
+    # Proceed with scraping
     reviews_df = scrape_reviews(establishments)
     save_reviews(reviews_df)
     unify_reviews()

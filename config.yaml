@@ -2,21 +2,21 @@ google_maps:
   scraping_criteria:
     scrape_unscraped: true  # Whether to scrape establishments that haven't been scraped yet
     scrape_before_date: "2024-01-01"  # Only scrape establishments scraped before this date
-    max_reviews_per_establishment: 499  # Maximum number of reviews per establishment
+    max_reviews_per_establishment: 1500  # Maximum number of reviews per establishment
     min_reviews_per_establishment: 100  # Minimum number of reviews per establishment
-    max_total_reviews: 4000  # Maximum total number of reviews across all establishments
-    custom_place_ids: []  # Optional list of specific placeIds to scrape
-
+    max_total_reviews: 9500  # Maximum total reviews to scrape
+    require_confirmation: true  # Whether to ask for confirmation before scraping
+    custom_place_ids: []  # List of specific place IDs to scrape, overrides other criteria if not empty
   api_settings:
-    max_reviews: 500  # Maximum number of reviews to fetch per establishment
-    reviews_sort: "newest"  # Sort order for reviews
-    language: "en"  # Language for reviews
-    reviews_origin: "all"  # Origin of reviews
-    personal_data: false  # Whether to include personal data
-    token_file: "tokens/apify_token_dev1.txt"  # Choose between apify_token_dev1.txt or apify_token_dev2.txt
-    deepl_token_file: "tokens/deepl_token.txt"  # Token file for DeepL translations
-    deepseek_token_file: "tokens/deepseek_api_key.txt"  # Token file for DeepSeek translations
-    translation_service: "deepseek"  # Choose between "deepl" or "deepseek"
+      max_reviews: 1500
+      reviews_sort: "newest"  # Sort order for reviews
+      language: "en"  # Language for reviews
+      reviews_origin: "all"  # Origin of reviews
+      personal_data: false  # Whether to include personal data
+      token_file: "tokens/apify_token_dev.txt"
+      deepl_token_file: "tokens/deepl_token_dev.txt"
+      deepseek_token_file: "tokens/deepseek_api_key.txt"
+      translation_service: "deepl"  # "deepl" or "deepseek"
 
 trustpilot:
   scraping_criteria:
