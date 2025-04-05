@@ -238,7 +238,7 @@ def scrape_reviews(establishments):
 def save_reviews(reviews_df):
     # Define the columns we want to keep
     required_columns = [
-        'reviewId',  # Now included in the required columns
+        'reviewId',
         'reviewerNumberOfReviews',
         'isLocalGuide',
         'text',
@@ -321,8 +321,8 @@ def unify_reviews():
         # Drop rows where sourceFile is empty/null
         existing_df = existing_df.dropna(subset=['sourceFile'])
         
-        # Get list of already processed source files
-        processed_files = set(existing_df['sourceFile'].unique())
+        # Get list of already processed source files (using just the filename)
+        processed_files = set(Path(f).name for f in existing_df['sourceFile'].unique())
         print(f"Previously processed files: {len(processed_files)}")
         
         # Add existing reviews to all_reviews
@@ -335,7 +335,7 @@ def unify_reviews():
                 continue  # Skip unified files
                 
             # Only process files that haven't been processed before
-            if str(file) not in processed_files:
+            if file.name not in processed_files:
                 print(f"Processing new file: {file}")
                 df = pd.read_excel(file)
                 new_files += 1
@@ -413,7 +413,8 @@ def unify_reviews():
         timestamp = datetime.now().strftime("%Y-%m-%d")
         output_file = f"reviews/google/allGoogleReviews_{timestamp}.xlsx"
         unified_df.to_excel(output_file, index=False)
-        print(f"\nSaved unified reviews to: {output_file}")
+        print(f"\nUnified reviews saved to {output_file}")
+        print(f"Total reviews in unified file: {len(unified_df)}")
     else:
         print("No reviews found to unify.")
 
