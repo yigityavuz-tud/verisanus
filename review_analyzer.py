@@ -120,7 +120,7 @@ class ReviewAnalyzer:
         # Extract relevant fields from Google Maps
         google_reviews = self.google_df[['placeId', 'stars', 'publishedAtDate', 
                                        'reviewerNumberOfReviews', 'isLocalGuide',
-                                       'review_text', 'responseFromOwnerText', 
+                                       'review_text', 'responseFromOwnerText_en', 
                                        'responseFromOwnerDate']].copy()
         
         google_reviews['source'] = 'Google Maps'
@@ -410,19 +410,41 @@ class ReviewAnalyzer:
         print(f"Aspect-based sentiment calculated for {len(self.aspect_df)} establishments")
         return self.aspect_df
     
-    def perform_topic_modeling(self, n_topics=5, n_words=10):
-        """Perform topic modeling on reviews for each establishment."""
+    def perform_topic_modeling(self, n_topics=5, n_words=10, min_reviews=20):
+        """
+        Perform topic modeling on reviews for each establishment and return metrics for ranking.
+        
+        Parameters:
+        -----------
+        n_topics : int, optional
+            Number of topics to extract (default: 5)
+        n_words : int, optional
+            Number of top words to extract for each topic (default: 10)
+        min_reviews : int, optional
+            Minimum number of reviews required to perform topic modeling (default: 20)
+            
+        Returns:
+        --------
+        dict
+            Dictionary with topic modeling results indexed by placeId
+        """
         print("Performing topic modeling...")
         
         # Initialize topic modeling results
         self.topic_results = {}
         
-        # Create a count vectorizer
+        # Create a count vectorizer with enhanced preprocessing
+        stop_words = set(stopwords.words('english'))
+        # Add domain-specific stop words
+        domain_stop_words = ['hair', 'transplant', 'clinic', 'istanbul', 'turkey']
+        stop_words.update(domain_stop_words)
+        
         vectorizer = CountVectorizer(
-            max_df=0.95, 
-            min_df=2,
-            stop_words='english',
-            max_features=1000
+            max_df=0.9,  # Ignore terms that appear in more than 90% of documents
+            min_df=3,    # Ignore terms that appear in fewer than 3 documents
+            stop_words=list(stop_words),
+            max_features=1000,
+            ngram_range=(1, 2)  # Include both unigrams and bigrams
         )
         
         # For each establishment with sufficient reviews, perform topic modeling
@@ -430,52 +452,211 @@ class ReviewAnalyzer:
             place_reviews = self.combined_reviews[self.combined_reviews['placeId'] == place_id]
             
             # Skip if not enough reviews
-            if len(place_reviews) < 20:
+            if len(place_reviews) < min_reviews:
                 continue
                 
-            # Prepare the documents
-            documents = place_reviews['review_text'].fillna('').tolist()
+            # Prepare the documents with better preprocessing
+            documents = []
+            review_ids = []
             
+            for idx, review in place_reviews.iterrows():
+                if pd.isna(review['review_text']) or review['review_text'] == '':
+                    continue
+                    
+                # Clean and normalize text
+                text = review['review_text'].lower()
+                text = re.sub(r'[^\w\s]', ' ', text)  # Remove punctuation
+                text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
+                
+                if len(text.split()) > 3:  # Only include reviews with more than 3 words
+                    documents.append(text)
+                    review_ids.append(idx)
+            
+            if len(documents) < min_reviews:
+                continue
+                
             # Vectorize the text
-            X = vectorizer.fit_transform(documents)
+            try:
+                X = vectorizer.fit_transform(documents)
+                
+                # Get feature names
+                feature_names = vectorizer.get_feature_names_out()
+                
+                # Create and fit LDA model with optimized parameters
+                lda = LatentDirichletAllocation(
+                    n_components=n_topics,
+                    max_iter=20,
+                    learning_method='online',
+                    learning_offset=50.,
+                    random_state=42,
+                    doc_topic_prior=0.1,  # Smoother topic distribution
+                    topic_word_prior=0.01  # Sparser word distribution
+                )
+                
+                lda.fit(X)
+                
+                # Get topic distribution for each document
+                topic_distribution = lda.transform(X)
+                
+                # Calculate coherence scores for each topic
+                topic_coherence = []
+                for topic_idx, topic in enumerate(lda.components_):
+                    top_words_idx = topic.argsort()[:-n_words-1:-1]
+                    
+                    # Calculate simple coherence based on co-occurrence
+                    coherence_score = 0
+                    for i in range(len(top_words_idx)):
+                        for j in range(i+1, len(top_words_idx)):
+                            # Count documents with both words
+                            word_i_docs = X[:, top_words_idx[i]].toarray().flatten() > 0
+                            word_j_docs = X[:, top_words_idx[j]].toarray().flatten() > 0
+                            both_words = np.logical_and(word_i_docs, word_j_docs).sum()
+                            # Add log of co-occurrence probability
+                            if both_words > 0:
+                                coherence_score += np.log(both_words / len(documents))
+                    
+                    # Normalize by number of word pairs
+                    n_pairs = len(top_words_idx) * (len(top_words_idx) - 1) / 2
+                    if n_pairs > 0:
+                        coherence_score /= n_pairs
+                    
+                    topic_coherence.append(coherence_score)
+                
+                # Extract top words for each topic
+                topics = []
+                for topic_idx, topic in enumerate(lda.components_):
+                    top_words_idx = topic.argsort()[:-n_words-1:-1]
+                    top_words = [feature_names[i] for i in top_words_idx]
+                    
+                    # Calculate document coverage for this topic
+                    # (percentage of documents where this topic has the highest probability)
+                    primary_topic_count = sum(np.argmax(topic_distribution, axis=1) == topic_idx)
+                    document_coverage = primary_topic_count / len(topic_distribution) * 100
+                    
+                    topics.append({
+                        'words': top_words,
+                        'coherence': topic_coherence[topic_idx],
+                        'document_coverage': document_coverage,
+                        'word_weights': topic[top_words_idx].tolist()
+                    })
+                
+                # Calculate topic diversity (entropy of topic distribution)
+                # Higher entropy means more evenly distributed topics, indicating more diverse content
+                topic_entropies = []
+                for doc_topic_dist in topic_distribution:
+                    # Normalize distribution to sum to 1
+                    doc_topic_dist = doc_topic_dist / doc_topic_dist.sum()
+                    # Calculate entropy
+                    topic_entropy = -np.sum(doc_topic_dist * np.log2(doc_topic_dist + 1e-10))
+                    # Normalize by max possible entropy (log2(n_topics))
+                    topic_entropy /= np.log2(n_topics)
+                    topic_entropies.append(topic_entropy)
+                
+                avg_topic_entropy = np.mean(topic_entropies)
+                
+                # Calculate topic clarity (inverse of perplexity)
+                # Lower perplexity means the model better explains the data
+                perplexity = lda.perplexity(X)
+                topic_clarity = 1 / (1 + perplexity / 100)  # Normalize to 0-1 range
+                
+                # Calculate topic concentration (Gini coefficient of topic distribution)
+                # Higher concentration means reviews focus on fewer topics
+                topic_concentrations = []
+                for doc_topic_dist in topic_distribution:
+                    # Sort probabilities in ascending order
+                    sorted_probs = np.sort(doc_topic_dist)
+                    # Calculate Lorenz curve
+                    cumulative_probs = np.cumsum(sorted_probs)
+                    # Normalize to sum to 1
+                    lorenz_curve = cumulative_probs / cumulative_probs[-1]
+                    # Calculate Gini coefficient
+                    # (area between line of equality and Lorenz curve) / (area under line of equality)
+                    n = len(sorted_probs)
+                    indices = np.arange(1, n + 1)
+                    gini = 1 - 2 * np.sum((indices / n) - lorenz_curve) / n
+                    topic_concentrations.append(gini)
+                
+                avg_topic_concentration = np.mean(topic_concentrations)
+                
+                # Calculate alignment between topics and sentiment
+                if 'sentiment_score' in place_reviews.columns:
+                    # Assign each review to its primary topic
+                    primary_topics = np.argmax(topic_distribution, axis=1)
+                    
+                    # Calculate average sentiment for each topic
+                    topic_sentiments = []
+                    for i in range(n_topics):
+                        topic_reviews = [review_ids[j] for j, topic in enumerate(primary_topics) if topic == i]
+                        if topic_reviews:
+                            avg_sentiment = place_reviews.loc[topic_reviews, 'sentiment_score'].mean()
+                            topic_sentiments.append(avg_sentiment)
+                        else:
+                            topic_sentiments.append(0)
+                    
+                    # Calculate sentiment variance across topics
+                    sentiment_variance = np.var(topic_sentiments)
+                    
+                    # Calculate sentiment concentration (are positive/negative sentiments clustered in specific topics?)
+                    pos_topic_probs = np.zeros(n_topics)
+                    neg_topic_probs = np.zeros(n_topics)
+                    
+                    for j, review_id in enumerate(review_ids):
+                        sentiment = place_reviews.loc[review_id, 'sentiment_score']
+                        if sentiment > 0.2:  # Positive sentiment
+                            pos_topic_probs += topic_distribution[j]
+                        elif sentiment < -0.2:  # Negative sentiment
+                            neg_topic_probs += topic_distribution[j]
+                    
+                    # Normalize
+                    if pos_topic_probs.sum() > 0:
+                        pos_topic_probs /= pos_topic_probs.sum()
+                    if neg_topic_probs.sum() > 0:
+                        neg_topic_probs /= neg_topic_probs.sum()
+                    
+                    # Calculate Jensen-Shannon divergence between positive and negative topic distributions
+                    # Higher divergence means positive and negative reviews focus on different topics
+                    if pos_topic_probs.sum() > 0 and neg_topic_probs.sum() > 0:
+                        m = 0.5 * (pos_topic_probs + neg_topic_probs)
+                        sentiment_topic_divergence = 0.5 * (
+                            entropy(pos_topic_probs, m) + entropy(neg_topic_probs, m)
+                        )
+                    else:
+                        sentiment_topic_divergence = 0
+                else:
+                    topic_sentiments = [0] * n_topics
+                    sentiment_variance = 0
+                    sentiment_topic_divergence = 0
+                
+                # Store key metrics for ranking
+                metrics = {
+                    'topic_diversity': avg_topic_entropy,
+                    'topic_coherence': np.mean(topic_coherence),
+                    'topic_clarity': topic_clarity,
+                    'topic_concentration': avg_topic_concentration,
+                    'sentiment_variance': sentiment_variance,
+                    'sentiment_topic_divergence': sentiment_topic_divergence,
+                    'top_topic_coverage': max([topic['document_coverage'] for topic in topics]),
+                    'review_coverage': len(documents) / len(place_reviews) * 100,  # % of reviews with meaningful content
+                }
+                
+                # Store the results
+                self.topic_results[place_id] = {
+                    'model': lda,
+                    'vectorizer': vectorizer,
+                    'topics': topics,
+                    'metrics': metrics,
+                    'topic_sentiments': topic_sentiments
+                }
+                
+                # Update metrics DataFrame with key metrics for ranking
+                idx = self.metrics_df[self.metrics_df['placeId'] == place_id].index
+                if len(idx) > 0:
+                    for metric_name, metric_value in metrics.items():
+                        self.metrics_df.at[idx[0], metric_name] = metric_value
             
-            # Get feature names
-            feature_names = vectorizer.get_feature_names_out()
-            
-            # Create and fit LDA model
-            lda = LatentDirichletAllocation(
-                n_components=n_topics,
-                max_iter=10,
-                learning_method='online',
-                random_state=42
-            )
-            
-            lda.fit(X)
-            
-            # Extract top words for each topic
-            topics = []
-            for topic_idx, topic in enumerate(lda.components_):
-                top_words_idx = topic.argsort()[:-n_words-1:-1]
-                top_words = [feature_names[i] for i in top_words_idx]
-                topics.append((topic_idx, top_words))
-            
-            # Store the results
-            self.topic_results[place_id] = {
-                'model': lda,
-                'vectorizer': vectorizer,
-                'topics': topics
-            }
-            
-            # Get topic distribution for each document
-            topic_distribution = lda.transform(X)
-            
-            # Calculate topic diversity (entropy of topic distribution)
-            avg_topic_entropy = np.mean([entropy(doc_topics) for doc_topics in topic_distribution])
-            
-            # Update metrics with topic diversity
-            idx = self.metrics_df[self.metrics_df['placeId'] == place_id].index
-            if len(idx) > 0:
-                self.metrics_df.at[idx[0], 'topic_diversity'] = avg_topic_entropy
+            except Exception as e:
+                print(f"Error performing topic modeling for establishment {place_id}: {str(e)}")
+                continue
         
         print(f"Topic modeling completed for {len(self.topic_results)} establishments")
         return self.topic_results
@@ -829,7 +1010,7 @@ class ReviewAnalyzer:
                 'cluster_count': cluster_count,
                 'largest_cluster_size': largest_cluster,
                 'similar_review_rate': similar_review_rate,
-                'authenticity_concerns': is_polarized or high_five_star or has_review_clusters or similar_review_rate > 0.1
+                'authenticity_concerns': has_review_clusters or similar_review_rate > 0.1
             }
             
             authenticity_metrics.append(place_authenticity)
@@ -1144,8 +1325,14 @@ class ReviewAnalyzer:
             # Authenticity and trustworthiness (10%)
             'verified_reviewer_pct': 5,
             'authenticity_concerns': -5  # Negative weight
+
+            # # Add topic modeling metrics
+            # 'topic_diversity': 5,          # Reward establishments with diverse discussion topics
+            # 'topic_coherence': 3,          # Reward establishments with clear, coherent topics
+            # 'sentiment_variance': -2,      # Penalize high variance in sentiment across topics
+            # 'sentiment_topic_divergence': 5  # Reward clear distinction between positive/negative topics
         }
-        
+                
         # Create a copy of the metrics dataframe for scoring
         score_df = self.metrics_df.copy()
         

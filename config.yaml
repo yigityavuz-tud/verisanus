@@ -6,11 +6,11 @@ google_maps:
     min_reviews_per_establishment: 100  # Minimum number of reviews per establishment
     max_total_reviews: 9500  # Maximum total reviews to scrape
     require_confirmation: true  # Whether to ask for confirmation before scraping
-    custom_place_ids: []  # List of specific place IDs to scrape, overrides other criteria if not empty
+    custom_place_ids: ["ChIJ0c9vBG-2yhQRgLzf-6a4veg"]  # List of specific place IDs to scrape, overrides other criteria if not empty
   
   api_settings:
     translate: false  # Whether to translate reviews
-    apify_token_file: "tokens/apify_token_dev.txt"
+    apify_token_file: "tokens/apify_token_dev1.txt"
     deepl_token_file: "tokens/deepl_token_dev.txt"
     deepseek_token_file: "tokens/deepseek_api_key.txt"
     translation_service: "deepseek"  # "deepl" or "deepseek"
