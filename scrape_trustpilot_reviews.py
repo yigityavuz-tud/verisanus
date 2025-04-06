@@ -5,7 +5,8 @@ import hashlib
 from datetime import datetime
 from apify_client import ApifyClient
 from pathlib import Path
-import deepl
+# Import from translation_utils instead of direct deepl import
+from translation_utils import translate_column, log_deepl_usage, load_config
 
 def load_config():
     with open('config.yaml', 'r') as file:
@@ -18,12 +19,7 @@ def get_apify_token(token_file):
     except FileNotFoundError:
         raise ValueError(f"Token file {token_file} not found. Please check the config file.")
 
-def get_deepl_token(token_file):
-    try:
-        with open(token_file, 'r') as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        raise ValueError(f"DeepL token file {token_file} not found. Please check the config file.")
+# Remove get_deepl_token as it's in translation_utils now
 
 def generate_review_id(company_domain, published_at):
     return hashlib.md5(f"{company_domain}_{published_at}".encode()).hexdigest()
@@ -202,42 +198,63 @@ def log_deepl_usage(characters_translated):
     
     return total_chars
 
-def translate_texts(df, translator):
+def translate_texts(df):
     """
-    Translate non-English texts to English using DeepL.
+    Translate non-English texts to English using the configured translation service.
     Only translates rows where reviewLanguage is not 'en'.
     Returns the translated DataFrame and the number of characters translated.
     """
-    # Create new columns for English translations
-    df['reviewBody_en'] = df['reviewBody']
-    df['reviewHeadline_en'] = df['reviewHeadline']
-    df['replyMessage_en'] = df['replyMessage']
+    config = load_config()['trustpilot']
+    translation_service = config['api_settings'].get('translation_service', 'deepl')
     
-    # Get rows that need translation
-    to_translate = df[df['reviewLanguage'] != 'en']
+    # Initialize English translations if they don't exist
+    if 'reviewBody_en' not in df.columns:
+        df['reviewBody_en'] = df['reviewBody']
+    if 'reviewHeadline_en' not in df.columns:
+        df['reviewHeadline_en'] = df['reviewHeadline']
+    if 'replyMessage_en' not in df.columns:
+        df['replyMessage_en'] = df['replyMessage']
+    
     characters_translated = 0
     
+    # Only translate non-English reviews
+    to_translate = df[df['reviewLanguage'] != 'en']
+    
     if not to_translate.empty:
+        print(f"Translating {len(to_translate)} reviews using {translation_service}...")
+        
         # Translate reviewBody
-        for idx in to_translate.index:
-            if pd.notna(df.loc[idx, 'reviewBody']):
-                translated = translator.translate_text(df.loc[idx, 'reviewBody'], target_lang="EN-GB")
-                df.loc[idx, 'reviewBody_en'] = translated.text
-                characters_translated += count_characters(df.loc[idx, 'reviewBody'])
+        if to_translate['reviewBody'].notna().any():
+            body_df, body_chars = translate_column(
+                to_translate,
+                'reviewBody',
+                'reviewBody_en',
+                translation_service=translation_service
+            )
+            df.loc[to_translate.index, 'reviewBody_en'] = body_df['reviewBody_en']
+            characters_translated += body_chars
         
         # Translate reviewHeadline
-        for idx in to_translate.index:
-            if pd.notna(df.loc[idx, 'reviewHeadline']):
-                translated = translator.translate_text(df.loc[idx, 'reviewHeadline'], target_lang="EN-GB")
-                df.loc[idx, 'reviewHeadline_en'] = translated.text
-                characters_translated += count_characters(df.loc[idx, 'reviewHeadline'])
+        if to_translate['reviewHeadline'].notna().any():
+            headline_df, headline_chars = translate_column(
+                to_translate,
+                'reviewHeadline',
+                'reviewHeadline_en',
+                translation_service=translation_service
+            )
+            df.loc[to_translate.index, 'reviewHeadline_en'] = headline_df['reviewHeadline_en']
+            characters_translated += headline_chars
         
         # Translate replyMessage
-        for idx in to_translate.index:
-            if pd.notna(df.loc[idx, 'replyMessage']):
-                translated = translator.translate_text(df.loc[idx, 'replyMessage'], target_lang="EN-GB")
-                df.loc[idx, 'replyMessage_en'] = translated.text
-                characters_translated += count_characters(df.loc[idx, 'replyMessage'])
+        if to_translate['replyMessage'].notna().any():
+            reply_df, reply_chars = translate_column(
+                to_translate,
+                'replyMessage',
+                'replyMessage_en',
+                translation_service=translation_service
+            )
+            df.loc[to_translate.index, 'replyMessage_en'] = reply_df['replyMessage_en']
+            characters_translated += reply_chars
     
     return df, characters_translated
 
@@ -266,13 +283,6 @@ def unify_reviews():
         'reviewLanguage',
         'trustpilotScrapedAt'
     ]
-    
-    # Initialize translator
-    config = load_config()['trustpilot']
-    if config['api_settings']['translate']:
-        if config['api_settings']['translation_service'] == 'deepl':
-            raise ValueError("DeepL token file not specified in the config.")
-        translator = deepl.Translator(get_deepl_token(config['api_settings']['deepl_token_file']))
     
     # First, try to load the latest unified file if it exists
     latest_unified = list(trustpilot_dir.glob("allTrustpilotReviews_*.xlsx"))
@@ -304,14 +314,14 @@ def unify_reviews():
         # Handle duplicate reviewIds by keeping the most recent review
         unified_df = unified_df.sort_values('trustpilotScrapedAt', ascending=False)
         unified_df = unified_df.drop_duplicates(subset=['reviewId'], keep='first')
+        
+        # Get translation configuration
+        config = load_config()['trustpilot']
         if config['api_settings']['translate']:
             # Translate texts for non-English reviews
-            unified_df, characters_translated = translate_texts(unified_df, translator)
-        
-            # Log the translation usage
-            total_chars = log_deepl_usage(characters_translated)
+            unified_df, characters_translated = translate_texts(unified_df)
+            
             print(f"Translated {characters_translated} characters in this run")
-            print(f"Total characters translated to date: {total_chars}")
         
         # Ensure all required columns are present in the final DataFrame
         for col in required_columns:
@@ -321,6 +331,8 @@ def unify_reviews():
         # Save the unified reviews with all columns
         timestamp = datetime.now().strftime("%Y-%m-%d")
         unified_df.to_excel(f"reviews/trustpilot/allTrustpilotReviews_{timestamp}.xlsx", index=False)
+        print(f"Unified reviews saved to reviews/trustpilot/allTrustpilotReviews_{timestamp}.xlsx")
+        print(f"Total reviews: {len(unified_df)}")
 
 def update_establishment_base():
     # Read the latest unified reviews file

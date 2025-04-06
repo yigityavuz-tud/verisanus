@@ -7,16 +7,19 @@ google_maps:
     max_total_reviews: 9500  # Maximum total reviews to scrape
     require_confirmation: true  # Whether to ask for confirmation before scraping
     custom_place_ids: []  # List of specific place IDs to scrape, overrides other criteria if not empty
+  
   api_settings:
-      max_reviews: 1500
-      reviews_sort: "newest"  # Sort order for reviews
-      language: "en"  # Language for reviews
-      reviews_origin: "all"  # Origin of reviews
-      personal_data: false  # Whether to include personal data
-      apify_token_file: "tokens/apify_token_dev.txt"
-      deepl_token_file: "tokens/deepl_token_dev.txt"
-      deepseek_token_file: "tokens/deepseek_api_key.txt"
-      translation_service: "deepl"  # "deepl" or "deepseek"
+    translate: false  # Whether to translate reviews
+    apify_token_file: "tokens/apify_token_dev.txt"
+    deepl_token_file: "tokens/deepl_token_dev.txt"
+    deepseek_token_file: "tokens/deepseek_api_key.txt"
+    translation_service: "deepseek"  # "deepl" or "deepseek"
+
+    max_reviews: 1500
+    reviews_sort: "newest"  # Sort order for reviews
+    language: "en"  # Language for reviews
+    reviews_origin: "all"  # Origin of reviews
+    personal_data: false  # Whether to include personal data
 
 trustpilot:
   scraping_criteria:
@@ -31,6 +34,7 @@ trustpilot:
     deepl_token_file: "tokens/deepl_token_dev.txt"
     deepseek_token_file: "tokens/deepseek_api_key.txt"
     translation_service: "deepseek"  # "deepl" or "deepseek"
+
     start_page: 1
     count: 500
     minDelay: 3000
