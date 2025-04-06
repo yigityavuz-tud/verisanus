@@ -9,6 +9,23 @@ import yaml
 def load_config():
     with open('config.yaml', 'r') as file:
         return yaml.safe_load(file)
+    
+def get_translation_service(config_section='google_maps'):
+    """
+    Get the configured translation service from config.yaml
+    
+    Parameters:
+    -----------
+    config_section : str
+        The section in the config file to use (default: 'google_maps')
+        
+    Returns:
+    --------
+    str
+        The translation service name ('deepl' or 'deepseek')
+    """
+    config = load_config()
+    return config[config_section]['api_settings'].get('translation_service', 'deepl')
 
 def get_deepl_token():
     config = load_config()['google_maps']
@@ -45,7 +62,7 @@ def translate_with_deepseek(text, api_key):
     }
     
     # Craft a prompt that will ensure we get just the translation
-    prompt = f"Translate the following text to English. Only provide the translation, nothing else:\n\n{text}"
+    prompt = f"Translate the following text to English. Only provide the translation, nothing else. If no translation is necessary, return the same text as the input, nothing else:\n\n{text}"
     
     data = {
         "messages": [{"role": "user", "content": prompt}],

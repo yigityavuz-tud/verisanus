@@ -5,7 +5,8 @@ import hashlib
 from datetime import datetime
 from apify_client import ApifyClient
 from pathlib import Path
-import deepl
+# Import from translation_utils instead of direct deepl import
+from translation_utils import translate_column, log_deepl_usage, load_config
 
 def load_config():
     with open('config.yaml', 'r') as file:
@@ -18,12 +19,7 @@ def get_apify_token(token_file):
     except FileNotFoundError:
         raise ValueError(f"Token file {token_file} not found. Please check the config file.")
 
-def get_deepl_token(token_file):
-    try:
-        with open(token_file, 'r') as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        raise ValueError(f"DeepL token file {token_file} not found. Please check the config file.")
+# Remove get_deepl_token as it's in translation_utils now
 
 def generate_review_id(company_domain, published_at):
     return hashlib.md5(f"{company_domain}_{published_at}".encode()).hexdigest()
@@ -48,12 +44,8 @@ def get_establishments_to_scrape():
         # Apply filtering criteria
         if config['scraping_criteria']['scrape_unscraped']:
             # If we're scraping unscraped, we don't need to check the date
-            df = df[df['trustpilotScrapedAt'].isna()]
-        elif config['scraping_criteria']['scrape_before_date']:
-            # Only check date if we're not specifically looking for unscraped
-            scrape_before_date = pd.to_datetime(config['scraping_criteria']['scrape_before_date'])
-            df = df[df['trustpilotScrapedAt'] < scrape_before_date]
-    
+            df = df[df['trustpilotScrapedAt'].isna() | (df['trustpilotScrapedAt'] == '') | (df['trustpilotScrapedAt'] < config['scraping_criteria']['scrape_before_date'])]
+
     # Limit the number of establishments
     df = df.head(config['scraping_criteria']['max_establishments'])
     
@@ -82,7 +74,7 @@ def standardize_date(date_str):
 
 def scrape_reviews(establishments):
     config = load_config()['trustpilot']
-    token = get_apify_token(config['api_settings']['token_file'])
+    token = get_apify_token(config['api_settings']['apify_token_file'])
     client = ApifyClient(token)
     
     all_reviews = []
@@ -93,6 +85,10 @@ def scrape_reviews(establishments):
             "companyDomain": company_domain,
             "startPage": config['api_settings']['start_page'],
             "count": config['api_settings']['count'],
+            "minDelay": config['api_settings']['minDelay'],
+            "replies": config['api_settings']['replies'],
+            "sort": config['api_settings']['sort'],
+            "verified": config['api_settings']['verified']
         }
         
         run = client.actor("fLXimoyuhE1UQgDbM").call(run_input=run_input)
@@ -202,42 +198,63 @@ def log_deepl_usage(characters_translated):
     
     return total_chars
 
-def translate_texts(df, translator):
+def translate_texts(df):
     """
-    Translate non-English texts to English using DeepL.
+    Translate non-English texts to English using the configured translation service.
     Only translates rows where reviewLanguage is not 'en'.
     Returns the translated DataFrame and the number of characters translated.
     """
-    # Create new columns for English translations
-    df['reviewBody_en'] = df['reviewBody']
-    df['reviewHeadline_en'] = df['reviewHeadline']
-    df['replyMessage_en'] = df['replyMessage']
+    config = load_config()['trustpilot']
+    translation_service = config['api_settings'].get('translation_service', 'deepl')
     
-    # Get rows that need translation
-    to_translate = df[df['reviewLanguage'] != 'en']
+    # Initialize English translations if they don't exist
+    if 'reviewBody_en' not in df.columns:
+        df['reviewBody_en'] = df['reviewBody']
+    if 'reviewHeadline_en' not in df.columns:
+        df['reviewHeadline_en'] = df['reviewHeadline']
+    if 'replyMessage_en' not in df.columns:
+        df['replyMessage_en'] = df['replyMessage']
+    
     characters_translated = 0
     
+    # Only translate non-English reviews
+    to_translate = df[df['reviewLanguage'] != 'en']
+    
     if not to_translate.empty:
+        print(f"Translating {len(to_translate)} reviews using {translation_service}...")
+        
         # Translate reviewBody
-        for idx in to_translate.index:
-            if pd.notna(df.loc[idx, 'reviewBody']):
-                translated = translator.translate_text(df.loc[idx, 'reviewBody'], target_lang="EN-GB")
-                df.loc[idx, 'reviewBody_en'] = translated.text
-                characters_translated += count_characters(df.loc[idx, 'reviewBody'])
+        if to_translate['reviewBody'].notna().any():
+            body_df, body_chars = translate_column(
+                to_translate,
+                'reviewBody',
+                'reviewBody_en',
+                translation_service=translation_service
+            )
+            df.loc[to_translate.index, 'reviewBody_en'] = body_df['reviewBody_en']
+            characters_translated += body_chars
         
         # Translate reviewHeadline
-        for idx in to_translate.index:
-            if pd.notna(df.loc[idx, 'reviewHeadline']):
-                translated = translator.translate_text(df.loc[idx, 'reviewHeadline'], target_lang="EN-GB")
-                df.loc[idx, 'reviewHeadline_en'] = translated.text
-                characters_translated += count_characters(df.loc[idx, 'reviewHeadline'])
+        if to_translate['reviewHeadline'].notna().any():
+            headline_df, headline_chars = translate_column(
+                to_translate,
+                'reviewHeadline',
+                'reviewHeadline_en',
+                translation_service=translation_service
+            )
+            df.loc[to_translate.index, 'reviewHeadline_en'] = headline_df['reviewHeadline_en']
+            characters_translated += headline_chars
         
         # Translate replyMessage
-        for idx in to_translate.index:
-            if pd.notna(df.loc[idx, 'replyMessage']):
-                translated = translator.translate_text(df.loc[idx, 'replyMessage'], target_lang="EN-GB")
-                df.loc[idx, 'replyMessage_en'] = translated.text
-                characters_translated += count_characters(df.loc[idx, 'replyMessage'])
+        if to_translate['replyMessage'].notna().any():
+            reply_df, reply_chars = translate_column(
+                to_translate,
+                'replyMessage',
+                'replyMessage_en',
+                translation_service=translation_service
+            )
+            df.loc[to_translate.index, 'replyMessage_en'] = reply_df['replyMessage_en']
+            characters_translated += reply_chars
     
     return df, characters_translated
 
@@ -266,10 +283,6 @@ def unify_reviews():
         'reviewLanguage',
         'trustpilotScrapedAt'
     ]
-    
-    # Initialize DeepL translator
-    config = load_config()['trustpilot']
-    translator = deepl.Translator(get_deepl_token(config['api_settings']['deepl_token_file']))
     
     # First, try to load the latest unified file if it exists
     latest_unified = list(trustpilot_dir.glob("allTrustpilotReviews_*.xlsx"))
@@ -302,13 +315,13 @@ def unify_reviews():
         unified_df = unified_df.sort_values('trustpilotScrapedAt', ascending=False)
         unified_df = unified_df.drop_duplicates(subset=['reviewId'], keep='first')
         
-        # Translate texts for non-English reviews
-        unified_df, characters_translated = translate_texts(unified_df, translator)
-        
-        # Log the translation usage
-        total_chars = log_deepl_usage(characters_translated)
-        print(f"Translated {characters_translated} characters in this run")
-        print(f"Total characters translated to date: {total_chars}")
+        # Get translation configuration
+        config = load_config()['trustpilot']
+        if config['api_settings']['translate']:
+            # Translate texts for non-English reviews
+            unified_df, characters_translated = translate_texts(unified_df)
+            
+            print(f"Translated {characters_translated} characters in this run")
         
         # Ensure all required columns are present in the final DataFrame
         for col in required_columns:
@@ -318,6 +331,8 @@ def unify_reviews():
         # Save the unified reviews with all columns
         timestamp = datetime.now().strftime("%Y-%m-%d")
         unified_df.to_excel(f"reviews/trustpilot/allTrustpilotReviews_{timestamp}.xlsx", index=False)
+        print(f"Unified reviews saved to reviews/trustpilot/allTrustpilotReviews_{timestamp}.xlsx")
+        print(f"Total reviews: {len(unified_df)}")
 
 def update_establishment_base():
     # Read the latest unified reviews file
@@ -330,7 +345,7 @@ def update_establishment_base():
     
     # Read and update the establishment base
     base_df = pd.read_excel('establishments/establishment_base.xlsx')
-    
+
     # Convert dates to datetime.date objects for consistent comparison
     base_df['trustpilotScrapedAt'] = pd.to_datetime(base_df['trustpilotScrapedAt'], errors='coerce').dt.date
     latest_dates['datePublished'] = pd.to_datetime(latest_dates['datePublished'], errors='coerce').dt.date
@@ -342,6 +357,15 @@ def update_establishment_base():
             new_date = row['datePublished']
             if pd.isna(current_date) or (not pd.isna(new_date) and new_date > current_date):
                 base_df.loc[mask, 'trustpilotScrapedAt'] = new_date
+
+    # Count the number of reviews for each placeId
+    trustpilotReviewCount = reviews_df.groupby('placeId').size().reset_index(name='trustpilotReviewCount')
+    
+    # Merge the review counts into the establishment base
+    base_df = base_df.merge(trustpilotReviewCount, on='placeId', how='left')
+    
+    # Fill NaN values in reviewCount with 0 (for establishments with no reviews)
+    base_df['trustpilotReviewCount'] = base_df['trustpilotReviewCount'].fillna(0).astype(int)
     
     # Save the updated base
     base_df.to_excel('establishments/establishment_base.xlsx', index=False)

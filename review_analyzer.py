@@ -77,17 +77,17 @@ class ReviewAnalyzer:
         self.preprocess_data()
         
     def load_data(self):
-        """Load the CSV files into pandas DataFrames."""
+        """Load the data files into pandas DataFrames."""
         print("Loading data...")
         
         # Load Google Maps reviews
-        self.google_df = pd.read_csv(self.google_maps_file)
+        self.google_df = pd.read_excel(self.google_maps_file)
         
         # Load Trustpilot reviews
-        self.trustpilot_df = pd.read_csv(self.trustpilot_file)
+        self.trustpilot_df = pd.read_excel(self.trustpilot_file)
         
-        # Load establishment data
-        self.establishments_df = pd.read_csv(self.establishment_file)
+        # Load establishment data (this remains CSV)
+        self.establishments_df = pd.read_excel(self.establishment_file)
         
         print(f"Loaded {len(self.google_df)} Google Maps reviews")
         print(f"Loaded {len(self.trustpilot_df)} Trustpilot reviews")
@@ -119,41 +119,42 @@ class ReviewAnalyzer:
         """Create a combined review dataset with normalized fields."""
         # Extract relevant fields from Google Maps
         google_reviews = self.google_df[['placeId', 'stars', 'publishedAtDate', 
-                                          'reviewerNumberOfReviews', 'isLocalGuide',
-                                          'review_text', 'responseFromOwnerText', 
-                                          'responseFromOwnerDate']].copy()
+                                       'reviewerNumberOfReviews', 'isLocalGuide',
+                                       'review_text', 'responseFromOwnerText', 
+                                       'responseFromOwnerDate']].copy()
         
         google_reviews['source'] = 'Google Maps'
         google_reviews['rating'] = google_reviews['stars']
-        google_reviews['review_date'] = google_reviews['publishedAtDate']
-        google_reviews['response_text'] = google_reviews['responseFromOwnerText']
-        google_reviews['response_date'] = google_reviews['responseFromOwnerDate']
+        google_reviews['review_date'] = pd.to_datetime(google_reviews['publishedAtDate']).dt.tz_localize(None)  # Make timezone-naive
+        google_reviews['response_text'] = google_reviews['responseFromOwnerText_en']
+        google_reviews['response_date'] = pd.to_datetime(google_reviews['responseFromOwnerDate']).dt.tz_localize(None)  # Make timezone-naive
         google_reviews['reviewer_experience'] = google_reviews['reviewerNumberOfReviews']
-        google_reviews['is_verified_reviewer'] = google_reviews['isLocalGuide'].fillna('').str.lower() == 'true'
+        # Convert isLocalGuide to boolean
+        google_reviews['isLocalGuide'] = google_reviews['isLocalGuide'].fillna(False).astype(bool)
         
         # Extract relevant fields from Trustpilot
         trustpilot_reviews = self.trustpilot_df[['placeId', 'ratingValue', 'datePublished', 
-                                                 'numberOfReviews', 'review_text',
-                                                 'replyMessage', 'replyPublishedDate']].copy()
+                                              'numberOfReviews', 'review_text',
+                                              'replyMessage', 'replyPublishedDate']].copy()
         
         trustpilot_reviews['source'] = 'Trustpilot'
         trustpilot_reviews['rating'] = trustpilot_reviews['ratingValue']
-        trustpilot_reviews['review_date'] = trustpilot_reviews['datePublished']
+        trustpilot_reviews['review_date'] = pd.to_datetime(trustpilot_reviews['datePublished']).dt.tz_localize(None)  # Make timezone-naive
         trustpilot_reviews['response_text'] = trustpilot_reviews['replyMessage']
-        trustpilot_reviews['response_date'] = trustpilot_reviews['replyPublishedDate']
+        trustpilot_reviews['response_date'] = pd.to_datetime(trustpilot_reviews['replyPublishedDate']).dt.tz_localize(None)  # Make timezone-naive
         trustpilot_reviews['reviewer_experience'] = trustpilot_reviews['numberOfReviews']
-        trustpilot_reviews['is_verified_reviewer'] = False  # Assuming no verified status in Trustpilot
+        trustpilot_reviews['isLocalGuide'] = False  # Trustpilot doesn't have local guides
         
         # Combine the reviews
         combined_cols = ['placeId', 'source', 'rating', 'review_date', 'review_text', 
-                          'response_text', 'response_date', 'reviewer_experience', 
-                          'is_verified_reviewer']
+                        'response_text', 'response_date', 'reviewer_experience', 
+                        'isLocalGuide']
         
         self.google_reviews = google_reviews[combined_cols]
         self.trustpilot_reviews = trustpilot_reviews[combined_cols]
         self.combined_reviews = pd.concat([self.google_reviews, self.trustpilot_reviews], ignore_index=True)
         
-        # Calculate days since review
+        # Calculate days since review using timezone-naive datetime
         current_date = datetime.now()
         self.combined_reviews['days_since_review'] = (current_date - self.combined_reviews['review_date']).dt.days
         
@@ -227,7 +228,7 @@ class ReviewAnalyzer:
             
             # Review quality metrics
             avg_review_length = place_reviews['review_length'].mean()
-            verified_reviewer_pct = place_reviews['is_verified_reviewer'].mean() * 100
+            verified_reviewer_pct = place_reviews['isLocalGuide'].mean() * 100
             avg_reviewer_exp = place_reviews['reviewer_experience'].mean()
             
             # Create metrics dictionary
@@ -1187,7 +1188,10 @@ class ReviewAnalyzer:
             score_df['final_score'] = ((score_df['composite_score'] - min_score) / (max_score - min_score)) * 100
         else:
             score_df['final_score'] = 50  # Default if all scores are the same
-        
+
+        # Replace NaN values in final_score with 0 before ranking
+        score_df['final_score'].fillna(0, inplace=True)
+
         # Round scores to 2 decimal places
         score_df['final_score'] = score_df['final_score'].round(2)
         

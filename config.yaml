@@ -7,26 +7,38 @@ google_maps:
     max_total_reviews: 9500  # Maximum total reviews to scrape
     require_confirmation: true  # Whether to ask for confirmation before scraping
     custom_place_ids: []  # List of specific place IDs to scrape, overrides other criteria if not empty
+  
   api_settings:
-      max_reviews: 1500
-      reviews_sort: "newest"  # Sort order for reviews
-      language: "en"  # Language for reviews
-      reviews_origin: "all"  # Origin of reviews
-      personal_data: false  # Whether to include personal data
-      token_file: "tokens/apify_token_dev.txt"
-      deepl_token_file: "tokens/deepl_token_dev.txt"
-      deepseek_token_file: "tokens/deepseek_api_key.txt"
-      translation_service: "deepl"  # "deepl" or "deepseek"
+    translate: false  # Whether to translate reviews
+    apify_token_file: "tokens/apify_token_dev.txt"
+    deepl_token_file: "tokens/deepl_token_dev.txt"
+    deepseek_token_file: "tokens/deepseek_api_key.txt"
+    translation_service: "deepseek"  # "deepl" or "deepseek"
+
+    max_reviews: 1500
+    reviews_sort: "newest"  # Sort order for reviews
+    language: "en"  # Language for reviews
+    reviews_origin: "all"  # Origin of reviews
+    personal_data: false  # Whether to include personal data
 
 trustpilot:
   scraping_criteria:
-    scrape_unscraped: true  # Whether to scrape establishments that haven't been scraped yet
-    scrape_before_date: "2024-01-01"  # Only scrape establishments scraped before this date
+    scrape_unscraped: false  # Whether to scrape establishments that haven't been scraped yet
+    scrape_before_date: "2024-04-07"  # Only scrape establishments scraped before this date
     max_establishments: 500
     custom_place_ids: []
 
   api_settings:
-    token_file: "tokens/apify_token_dev1.txt"
-    deepl_token_file: "tokens/deepl_token.txt"
+    translate: false
+    apify_token_file: "tokens/apify_token_dev.txt"
+    deepl_token_file: "tokens/deepl_token_dev.txt"
+    deepseek_token_file: "tokens/deepseek_api_key.txt"
+    translation_service: "deepseek"  # "deepl" or "deepseek"
+
     start_page: 1
-    count: 10 
+    count: 500
+    minDelay: 3000
+    replies: false
+    sort: "recency"
+    startPage: 1
+    verified: false

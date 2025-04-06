@@ -5,9 +5,8 @@ import hashlib
 from datetime import datetime
 from apify_client import ApifyClient
 from pathlib import Path
-import deepl
-import requests
-import json
+# Import from translation_utils instead
+from translation_utils import translate_column, log_deepl_usage, load_config
 
 def load_config():
     with open('config.yaml', 'r') as file:
@@ -22,98 +21,23 @@ def get_apify_token():
     except FileNotFoundError:
         raise ValueError(f"Token file {token_file} not found. Please check the config file.")
 
-def get_deepl_token():
-    config = load_config()['google_maps']
-    token_file = config['api_settings']['deepl_token_file']
-    try:
-        with open(token_file, 'r') as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        raise ValueError(f"DeepL token file {token_file} not found. Please check the config file.")
+# Remove duplicate translation-related functions that are now in translation_utils.py
+# Delete these functions:
+# - get_deepl_token
+# - get_deepseek_token
+# - count_characters
+# - log_deepl_usage
+# - translate_with_deepseek
 
-def get_deepseek_token():
-    config = load_config()['google_maps']
-    token_file = config['api_settings']['deepseek_token_file']
-    try:
-        with open(token_file, 'r') as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        raise ValueError(f"DeepSeek token file {token_file} not found. Please check the config file.")
-
-def count_characters(text):
-    """Count the number of characters in a text, handling NaN values."""
-    if pd.isna(text):
-        return 0
-    return len(str(text))
-
-def log_deepl_usage(characters_translated):
-    """Log the total characters translated to a file."""
-    log_file = "tokens/deepl_usage_log.txt"
-    
-    # Get current date
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    
-    # Read existing log if it exists
-    if os.path.exists(log_file):
-        with open(log_file, 'r') as f:
-            lines = f.readlines()
-            if lines:
-                last_line = lines[-1].strip()
-                try:
-                    total_chars = int(last_line.split(': ')[1])
-                except (IndexError, ValueError):
-                    total_chars = 0
-            else:
-                total_chars = 0
-    else:
-        total_chars = 0
-    
-    # Add new characters to total
-    total_chars += characters_translated
-    
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    
-    # Append new log entry
-    with open(log_file, 'a') as f:
-        f.write(f"{current_date}: {total_chars}\n")
-    
-    return total_chars
-
-def translate_with_deepseek(text, api_key):
+def translate_owner_responses(df):
     """
-    Translate text using DeepSeek API.
-    """
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-    
-    # Craft a prompt that will ensure we get just the translation
-    prompt = f"Translate the following text to English. Only provide the translation, nothing else:\n\n{text}"
-    
-    data = {
-        "messages": [{"role": "user", "content": prompt}],
-        "model": "deepseek-chat",
-        "temperature": 0.1  # Low temperature for more consistent translations
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-        return result['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        print(f"Error using DeepSeek API: {str(e)}")
-        return None
-
-def translate_owner_responses(df, translator=None, deepseek_token=None):
-    """
-    Translate non-English owner responses to English using either DeepL or DeepSeek.
+    Translate non-English owner responses to English using the configured translation service.
     Only translates rows where responseFromOwnerText is not empty and originalLanguage is not 'en'.
     Returns the translated DataFrame and the number of characters translated.
     """
+    config = load_config()['google_maps']
+    translation_service = config['api_settings'].get('translation_service', 'deepl')
+    
     # Create new column for English translations if it doesn't exist
     if 'responseFromOwnerText_en' not in df.columns:
         df['responseFromOwnerText_en'] = df['responseFromOwnerText']
@@ -123,34 +47,22 @@ def translate_owner_responses(df, translator=None, deepseek_token=None):
         (df['responseFromOwnerText'].notna()) & 
         (df['responseFromOwnerText'] != '') & 
         (df['originalLanguage'] != 'en')
-    ].index
+    ]
     
     characters_translated = 0
-    config = load_config()['google_maps']
-    translation_service = config['api_settings'].get('translation_service', 'deepl')
     
     if not to_translate.empty:
-        for idx in to_translate:
-            if pd.notna(df.loc[idx, 'responseFromOwnerText']):
-                try:
-                    if translation_service == 'deepseek':
-                        translated_text = translate_with_deepseek(
-                            df.loc[idx, 'responseFromOwnerText'], 
-                            deepseek_token
-                        )
-                        if translated_text:
-                            df.loc[idx, 'responseFromOwnerText_en'] = translated_text
-                            characters_translated += count_characters(df.loc[idx, 'responseFromOwnerText'])
-                    else:  # Use DeepL
-                        translated = translator.translate_text(
-                            df.loc[idx, 'responseFromOwnerText'], 
-                            target_lang="EN-GB"
-                        )
-                        df.loc[idx, 'responseFromOwnerText_en'] = translated.text
-                        characters_translated += count_characters(df.loc[idx, 'responseFromOwnerText'])
-                except Exception as e:
-                    print(f"Error translating text at index {idx}: {str(e)}")
-                    continue
+        print(f"Translating {len(to_translate)} owner responses using {translation_service}...")
+        translated_df, characters = translate_column(
+            to_translate, 
+            'responseFromOwnerText', 
+            'responseFromOwnerText_en',
+            translation_service=translation_service
+        )
+        
+        # Update the original dataframe with translations
+        df.loc[to_translate.index, 'responseFromOwnerText_en'] = translated_df['responseFromOwnerText_en']
+        characters_translated = characters
     
     return df, characters_translated
 
@@ -304,18 +216,6 @@ def unify_reviews():
         'sourceFile'
     ]
     
-    # Initialize translation service based on config
-    config = load_config()['google_maps']
-    translation_service = config['api_settings'].get('translation_service', 'deepl')
-    
-    translator = None
-    deepseek_token = None
-    
-    if translation_service == 'deepl':
-        translator = deepl.Translator(get_deepl_token())
-    else:  # deepseek
-        deepseek_token = get_deepseek_token()
-    
     # First, try to find the most recent unified file
     unified_files = list(google_dir.glob("allGoogleReviews_*.xlsx"))
     
@@ -402,19 +302,13 @@ def unify_reviews():
         unified_df = unified_df.sort_values('scrapedAt', ascending=False)
         unified_df = unified_df.drop_duplicates(subset=['reviewId'], keep='first')
         
-        # # Translate owner responses
-        # print(f"\nTranslating owner responses using {translation_service.upper()}...")
-        # unified_df, characters_translated = translate_owner_responses(
-        #     unified_df, 
-        #     translator=translator, 
-        #     deepseek_token=deepseek_token
-        # )
-        
-        # # Log the translation usage (only for DeepL)
-        # if translation_service == 'deepl':
-        #     total_chars = log_deepl_usage(characters_translated)
-        #     print(f"Translated {characters_translated} characters in this run")
-        #     print(f"Total characters translated to date: {total_chars}")
+        # Get translation configuration
+        config = load_config()['google_maps']
+        if config['api_settings'].get('translate', False):
+            # Translate owner responses
+            print(f"\nTranslating owner responses...")
+            unified_df, characters_translated = translate_owner_responses(unified_df)
+            print(f"Translated {characters_translated} characters in this run")
         
         # Save the unified reviews
         timestamp = datetime.now().strftime("%Y-%m-%d")
