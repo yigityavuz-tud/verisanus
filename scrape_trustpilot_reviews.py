@@ -48,12 +48,8 @@ def get_establishments_to_scrape():
         # Apply filtering criteria
         if config['scraping_criteria']['scrape_unscraped']:
             # If we're scraping unscraped, we don't need to check the date
-            df = df[df['trustpilotScrapedAt'].isna()]
-        elif config['scraping_criteria']['scrape_before_date']:
-            # Only check date if we're not specifically looking for unscraped
-            scrape_before_date = pd.to_datetime(config['scraping_criteria']['scrape_before_date'])
-            df = df[df['trustpilotScrapedAt'] < scrape_before_date]
-    
+            df = df[df['trustpilotScrapedAt'].isna() | (df['trustpilotScrapedAt'] == '') | (df['trustpilotScrapedAt'] < config['scraping_criteria']['scrape_before_date'])]
+
     # Limit the number of establishments
     df = df.head(config['scraping_criteria']['max_establishments'])
     
@@ -82,7 +78,7 @@ def standardize_date(date_str):
 
 def scrape_reviews(establishments):
     config = load_config()['trustpilot']
-    token = get_apify_token(config['api_settings']['token_file'])
+    token = get_apify_token(config['api_settings']['apify_token_file'])
     client = ApifyClient(token)
     
     all_reviews = []
@@ -93,6 +89,10 @@ def scrape_reviews(establishments):
             "companyDomain": company_domain,
             "startPage": config['api_settings']['start_page'],
             "count": config['api_settings']['count'],
+            "minDelay": config['api_settings']['minDelay'],
+            "replies": config['api_settings']['replies'],
+            "sort": config['api_settings']['sort'],
+            "verified": config['api_settings']['verified']
         }
         
         run = client.actor("fLXimoyuhE1UQgDbM").call(run_input=run_input)
@@ -267,9 +267,12 @@ def unify_reviews():
         'trustpilotScrapedAt'
     ]
     
-    # Initialize DeepL translator
+    # Initialize translator
     config = load_config()['trustpilot']
-    translator = deepl.Translator(get_deepl_token(config['api_settings']['deepl_token_file']))
+    if config['api_settings']['translate']:
+        if config['api_settings']['translation_service'] == 'deepl':
+            raise ValueError("DeepL token file not specified in the config.")
+        translator = deepl.Translator(get_deepl_token(config['api_settings']['deepl_token_file']))
     
     # First, try to load the latest unified file if it exists
     latest_unified = list(trustpilot_dir.glob("allTrustpilotReviews_*.xlsx"))
@@ -301,14 +304,14 @@ def unify_reviews():
         # Handle duplicate reviewIds by keeping the most recent review
         unified_df = unified_df.sort_values('trustpilotScrapedAt', ascending=False)
         unified_df = unified_df.drop_duplicates(subset=['reviewId'], keep='first')
+        if config['api_settings']['translate']:
+            # Translate texts for non-English reviews
+            unified_df, characters_translated = translate_texts(unified_df, translator)
         
-        # Translate texts for non-English reviews
-        unified_df, characters_translated = translate_texts(unified_df, translator)
-        
-        # Log the translation usage
-        total_chars = log_deepl_usage(characters_translated)
-        print(f"Translated {characters_translated} characters in this run")
-        print(f"Total characters translated to date: {total_chars}")
+            # Log the translation usage
+            total_chars = log_deepl_usage(characters_translated)
+            print(f"Translated {characters_translated} characters in this run")
+            print(f"Total characters translated to date: {total_chars}")
         
         # Ensure all required columns are present in the final DataFrame
         for col in required_columns:
@@ -330,7 +333,7 @@ def update_establishment_base():
     
     # Read and update the establishment base
     base_df = pd.read_excel('establishments/establishment_base.xlsx')
-    
+
     # Convert dates to datetime.date objects for consistent comparison
     base_df['trustpilotScrapedAt'] = pd.to_datetime(base_df['trustpilotScrapedAt'], errors='coerce').dt.date
     latest_dates['datePublished'] = pd.to_datetime(latest_dates['datePublished'], errors='coerce').dt.date
@@ -342,6 +345,15 @@ def update_establishment_base():
             new_date = row['datePublished']
             if pd.isna(current_date) or (not pd.isna(new_date) and new_date > current_date):
                 base_df.loc[mask, 'trustpilotScrapedAt'] = new_date
+
+    # Count the number of reviews for each placeId
+    trustpilotReviewCount = reviews_df.groupby('placeId').size().reset_index(name='trustpilotReviewCount')
+    
+    # Merge the review counts into the establishment base
+    base_df = base_df.merge(trustpilotReviewCount, on='placeId', how='left')
+    
+    # Fill NaN values in reviewCount with 0 (for establishments with no reviews)
+    base_df['trustpilotReviewCount'] = base_df['trustpilotReviewCount'].fillna(0).astype(int)
     
     # Save the updated base
     base_df.to_excel('establishments/establishment_base.xlsx', index=False)
