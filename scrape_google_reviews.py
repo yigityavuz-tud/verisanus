@@ -14,7 +14,7 @@ def load_config():
 
 def get_apify_token():
     config = load_config()['google_maps']
-    token_file = config['api_settings']['token_file']
+    token_file = config['api_settings']['apify_token_file']
     try:
         with open(token_file, 'r') as file:
             return file.read().strip()
@@ -82,10 +82,10 @@ def get_establishments_to_scrape():
     df = pd.read_excel('establishments/establishment_base.xlsx')
     
     # Check if custom_place_ids is specified and not empty
-    if 'custom_place_ids' in config and config['custom_place_ids']:
+    if 'custom_place_ids' in config['scraping_criteria'] and config['scraping_criteria']['custom_place_ids']:
         print("Custom place IDs found, overriding scraping criteria...")
         # Filter only the specified place IDs
-        df = df[df['placeId'].isin(config['custom_place_ids'])]
+        df = df[df['placeId'].isin(config['scraping_criteria']['custom_place_ids'])]
         return df
     
     # Convert googleMapsScrapedAt to datetime, handling empty values
