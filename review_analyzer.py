@@ -1,3 +1,11 @@
+# version: 1.1.0
+# Added cluster text similarity analysis
+# Added text similarity outlier detection
+# Updated the weights for composite score calculation
+# Changed file saving naming convention to include date and time
+# Improved the ranking file for easier interpretation with the fields that make up the composite score
+# Added version summary
+
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -65,10 +73,10 @@ class ReviewAnalyzer:
         # Define time weights for recency
         self.time_weights = {
             30: 1.0,    # Last month: full weight
-            90: 0.9,    # Last quarter: 90%
-            180: 0.8,   # Last 6 months: 80%
-            365: 0.7,   # Last year: 70%
-            730: 0.5,   # Last 2 years: 50%
+            90: 0.95,    # Last quarter: 90%
+            180: 0.85,   # Last 6 months: 80%
+            365: 0.8,   # Last year: 70%
+            730: 0.6,   # Last 2 years: 50%
             1095: 0.3,  # Last 3 years: 30%
             float('inf'): 0.1  # Older: 10%
         }
@@ -93,6 +101,7 @@ class ReviewAnalyzer:
         print(f"Loaded {len(self.google_df)} Google Maps reviews")
         print(f"Loaded {len(self.trustpilot_df)} Trustpilot reviews")
         print(f"Loaded {len(self.establishments_df)} establishments")
+
         
     def preprocess_data(self):
         """Preprocess the data for analysis."""
@@ -115,6 +124,10 @@ class ReviewAnalyzer:
         
         # Create combined review dataset
         self.process_combined_reviews()
+
+        # Filter out reviews unrelated to hair transplantation
+        self.filter_hair_transplant_reviews()
+        print("Data preprocessing completed")
         
     def process_combined_reviews(self):
         """Create a combined review dataset with normalized fields."""
@@ -176,6 +189,60 @@ class ReviewAnalyzer:
         self.combined_reviews['response_length'] = self.combined_reviews['response_text'].fillna('').str.len()
         
         print(f"Combined dataset created with {len(self.combined_reviews)} reviews")
+    
+    def filter_hair_transplant_reviews(self):
+        """
+        Identifies and keeps only reviews related to hair transplantation services.
+        Removes reviews about other medical procedures like dental work or plastic surgery
+        that don't mention hair.
+        """
+        print("Filtering reviews to keep only hair transplantation related content...")
+        
+        # Keywords related to hair transplantation
+        hair_keywords = [
+            'hair', 'transplant', 'graft', 'follicle', 'fue', 'dhi', 'balding', 
+            'hairline', 'donor', 'recipient', 'scalp', 'baldness', 'crown', 
+            'receding', 'density', 'implant', 'alopecia', 'shedding'
+        ]
+        
+        # Keywords indicating unrelated medical procedures
+        other_procedure_keywords = [
+            'teeth', 'dental', 'veneers', 'implants', 'crown', 'filling',
+            'plastic surgery', 'rhinoplasty', 'nose job', 'facelift', 'botox',
+            'liposuction', 'tummy tuck', 'breast', 'augmentation', 'laser eye'
+        ]
+        
+        # Count before filtering
+        initial_count = len(self.combined_reviews)
+        
+        # Create a mask for reviews to keep
+        keep_reviews = []
+        
+        for idx, review in self.combined_reviews.iterrows():
+            if pd.isna(review['review_text']) or review['review_text'] == '':
+                # Keep empty reviews (will be handled elsewhere)
+                keep_reviews.append(True)
+                continue
+                
+            text = review['review_text'].lower()
+            
+            # Check if review mentions hair transplantation
+            is_hair_related = any(keyword in text for keyword in hair_keywords)
+            
+            # Check if review mentions other medical procedures but NOT hair
+            is_other_procedure = (not is_hair_related) and any(keyword in text for keyword in other_procedure_keywords)
+            
+            # Keep reviews that are hair-related OR not about other medical procedures
+            keep_reviews.append(is_hair_related or not is_other_procedure)
+        
+        # Apply filter
+        self.combined_reviews = self.combined_reviews[keep_reviews]
+        
+        # Count after filtering
+        filtered_count = initial_count - len(self.combined_reviews)
+        
+        print(f"Filtered out {filtered_count} reviews unrelated to hair transplantation")
+        print(f"Remaining reviews: {len(self.combined_reviews)}")
 
     def calculate_basic_metrics(self):
         """Calculate basic metrics for each establishment."""
@@ -219,6 +286,7 @@ class ReviewAnalyzer:
                 
             # Recency metrics
             avg_days_since_review = place_reviews['days_since_review'].mean()
+            # Percentage of reviews in the last 90 days
             recent_reviews = place_reviews[place_reviews['days_since_review'] <= 90].shape[0]
             recent_reviews_pct = recent_reviews / total_reviews * 100 if total_reviews > 0 else 0
             
@@ -975,9 +1043,66 @@ class ReviewAnalyzer:
                 cluster_count = 0
                 largest_cluster = 0
             
-            # Check for text similarity among reviews
+            # Check for review similarity among clusters using TF-IDF within clusters
+            cluster_similarities = []
+            
+            # Only perform similarity analysis if clusters were detected
+            if has_review_clusters and clusters:
+                for cluster_idx, cluster in enumerate(clusters):
+                    # If cluster has enough reviews to perform meaningful similarity analysis
+                    if len(cluster) >= 3:
+                        cluster_reviews = place_reviews.loc[cluster, 'review_text'].fillna('')
+                        
+                        # Use TF-IDF to measure review similarity within this specific cluster
+                        tfidf_vectorizer = TfidfVectorizer(min_df=1, stop_words='english')
+                        try:
+                            # Create TF-IDF matrix just for this cluster
+                            cluster_tfidf_matrix = tfidf_vectorizer.fit_transform(cluster_reviews)
+                            
+                            # Calculate pairwise cosine similarity within the cluster
+                            from sklearn.metrics.pairwise import cosine_similarity
+                            cluster_similarity_matrix = cosine_similarity(cluster_tfidf_matrix)
+                            
+                            # Remove self-similarity (diagonal)
+                            np.fill_diagonal(cluster_similarity_matrix, 0)
+                            
+                            # Calculate average similarity within this cluster
+                            cluster_avg_similarity = cluster_similarity_matrix.sum() / (len(cluster) * (len(cluster) - 1))
+                            
+                            # Track similarity for each cluster
+                            cluster_similarities.append({
+                                'cluster_idx': cluster_idx,
+                                'size': len(cluster),
+                                'avg_similarity': cluster_avg_similarity
+                            })
+                            
+                        except Exception as e:
+                            print(f"Error calculating similarity for cluster {cluster_idx} of {place_id}: {e}")
+                
+                # Calculate overall metrics from cluster similarities
+                if cluster_similarities:
+                    # Average similarity across all clusters
+                    avg_cluster_similarity = np.mean([cs['avg_similarity'] for cs in cluster_similarities])
+                    
+                    # Maximum cluster similarity (most suspicious cluster)
+                    max_cluster_similarity = np.max([cs['avg_similarity'] for cs in cluster_similarities])
+                    
+                    # Number of suspicious clusters (with avg similarity > 0.5)
+                    suspicious_clusters = sum(1 for cs in cluster_similarities if cs['avg_similarity'] > 0.5)
+
+                else:
+                    avg_cluster_similarity = 0
+                    max_cluster_similarity = 0
+                    suspicious_clusters = 0
+            else:
+                avg_cluster_similarity = 0
+                max_cluster_similarity = 0
+                suspicious_clusters = 0
+            
+            # General similarity check for all reviews
+            similar_review_rate = 0
             if len(place_reviews) >= 5:
-                # Use TF-IDF to measure review similarity
+                # Use TF-IDF to measure review similarity across all reviews
                 tfidf_vectorizer = TfidfVectorizer(min_df=1, stop_words='english')
                 try:
                     tfidf_matrix = tfidf_vectorizer.fit_transform(place_reviews['review_text'].fillna(''))
@@ -997,23 +1122,23 @@ class ReviewAnalyzer:
                                 similar_pairs += 1
                     
                     similar_review_rate = similar_pairs / (len(place_reviews) * (len(place_reviews) - 1) / 2)
-                except:
+                except Exception as e:
+                    print(f"Error calculating general similarity: {e}")
                     similar_review_rate = 0
-            else:
-                similar_review_rate = 0
             
             # Create authenticity metrics
             place_authenticity = {
                 'placeId': place_id,
-                'is_polarized': is_polarized,
-                'high_five_star_rate': high_five_star,
                 'has_review_clusters': has_review_clusters,
                 'cluster_count': cluster_count,
                 'largest_cluster_size': largest_cluster,
+                'avg_cluster_similarity': avg_cluster_similarity,
+                'max_cluster_similarity': max_cluster_similarity,
+                'suspicious_clusters': suspicious_clusters,
                 'similar_review_rate': similar_review_rate,
-                'authenticity_concerns': has_review_clusters or similar_review_rate > 0.1
+                'authenticity_concerns': (has_review_clusters and max_cluster_similarity > 0.5) or similar_review_rate > 0.1
             }
-            
+
             authenticity_metrics.append(place_authenticity)
         
         self.authenticity_df = pd.DataFrame(authenticity_metrics)
@@ -1023,6 +1148,89 @@ class ReviewAnalyzer:
         print(f"Review authenticity analysis completed for {len(self.authenticity_df)} establishments")
         return self.authenticity_df
     
+    def analyze_similarity_outliers(self):
+        """
+        Analyze establishments with abnormally high similarity in review clusters
+        using the Interquartile Range (IQR) method.
+        """
+        print("Analyzing review cluster similarity outliers...")
+        
+        # Skip if authenticity metrics aren't available
+        if 'avg_cluster_similarity' not in self.metrics_df.columns:
+            print("ERROR: avg_cluster_similarity metric not found. Run detect_review_authenticity first.")
+            return None
+        
+        # Get all non-null avg_cluster_similarity values
+        similarity_values = self.metrics_df['avg_cluster_similarity'].dropna()
+        
+        if len(similarity_values) < 5:
+            print("Not enough data to calculate similarity outliers.")
+            return None
+        
+        # Calculate IQR statistics
+        Q1 = similarity_values.quantile(0.25)
+        Q3 = similarity_values.quantile(0.75)
+        IQR = Q3 - Q1
+        
+        # Define outlier thresholds
+        mild_threshold = Q3 + (1.5 * IQR)
+        extreme_threshold = Q3 + (3 * IQR)
+        
+        # Classify establishments
+        self.metrics_df['similarity_comparison'] = 'normal'
+        
+        # Identify mild outliers
+        mild_mask = (self.metrics_df['avg_cluster_similarity'] > mild_threshold) & \
+                (self.metrics_df['avg_cluster_similarity'] <= extreme_threshold)
+        self.metrics_df.loc[mild_mask, 'similarity_comparison'] = 'suspicious'
+        
+        # Identify extreme outliers
+        extreme_mask = self.metrics_df['avg_cluster_similarity'] > extreme_threshold
+        self.metrics_df.loc[extreme_mask, 'similarity_comparison'] = 'highly suspicious'
+        
+        # Create percentile rank for each establishment
+        self.metrics_df['similarity_percentile'] = self.metrics_df['avg_cluster_similarity'].rank(pct=True) * 100
+        
+        # Calculate how many standard deviations from the mean
+        mean_similarity = similarity_values.mean()
+        std_similarity = similarity_values.std()
+        
+        if std_similarity > 0:  # Avoid division by zero
+            self.metrics_df['similarity_z_score'] = (self.metrics_df['avg_cluster_similarity'] - mean_similarity) / std_similarity
+        else:
+            self.metrics_df['similarity_z_score'] = 0
+        
+        # Count outliers
+        mild_outliers = sum(mild_mask)
+        extreme_outliers = sum(extreme_mask)
+        
+        print(f"Found {mild_outliers} establishments with suspicious review similarity")
+        print(f"Found {extreme_outliers} establishments with highly suspicious review similarity")
+        
+        # Ensure the metric is used in the detect_review_authenticity method
+        if hasattr(self, 'authenticity_df') and not self.authenticity_df.empty:
+            # Update authenticity metrics
+            for idx, row in self.metrics_df.iterrows():
+                if row['similarity_comparison'] in ['suspicious', 'highly suspicious']:
+                    place_id = row['placeId']
+                    
+                    # Set authenticity_concerns to True for suspicious establishments
+                    auth_idx = self.authenticity_df[self.authenticity_df['placeId'] == place_id].index
+                    if len(auth_idx) > 0:
+                        self.authenticity_df.at[auth_idx[0], 'authenticity_concerns'] = True
+                        self.metrics_df.at[idx, 'authenticity_concerns'] = True
+                        
+                        # Add a new alert column specific to similarity concerns
+                        self.authenticity_df.at[auth_idx[0], 'cluster_similarity_alert'] = True
+                        self.metrics_df.at[idx, 'cluster_similarity_alert'] = True
+                    else:
+                        self.authenticity_df.at[auth_idx[0], 'cluster_similarity_alert'] = False
+                        self.metrics_df.at[idx, 'cluster_similarity_alert'] = False
+
+        
+        return self.metrics_df[['placeId', 'title', 'avg_cluster_similarity', 
+                            'similarity_comparison', 'similarity_percentile', 'similarity_z_score']]
+
     def analyze_comparative_references(self):
         """Extract and analyze comparative references in reviews."""
         print("Analyzing comparative references...")
@@ -1300,38 +1508,33 @@ class ReviewAnalyzer:
         
         # Define weights for different metric categories
         weights = {
-            # Rating and volume (30%)
-            'avg_rating': 15,
-            'total_reviews': 7.5,
-            'rating_consistency': 7.5,
+            # Rating and volume (20%)
+            'avg_rating': 15,  # Reduced from 20
+            'rating_consistency': 5,
             
-            # Sentiment (20%)
+            # Overall sentiment (22.5%)
             'avg_sentiment': 10,
-            'positive_review_pct': 5,
+            'positive_review_pct': 7.5,
             'sentiment_trend': 5,
             
-            # Service quality aspects (15%)
-            'service_sentiment': 5,
-            'quality_sentiment': 5,
-            'response_rate': 5,
+            # Aspects' sentiments (25%)
+            'service_sentiment': 8,  # Reduced from 10
+            'quality_sentiment': 8,  # Reduced from 10
+            'price_sentiment': 5,
+            'response_rate': 5,  # Reduced from 5
             
-            # Customer loyalty (15%)
-            'customer_loyalty_score': 7.5,
-            'will_return_rate': 7.5,
+            # Customer loyalty (8%)
+            'customer_loyalty_score': 8,  # Reduced from 10
             
-            # Temporal factors (10%)
-            'recent_reviews_pct': 5,
-            'rating_trend': 5,
+            # Temporal factors (7.5%)
+            'recent_reviews_pct': 5,  # Reduced from 5
+            'rating_trend': 3.5,  # Reduced from 5
             
-            # Authenticity and trustworthiness (10%)
+            # Authenticity and trustworthiness (15% - increased from 10%)
             'verified_reviewer_pct': 5,
-            'authenticity_concerns': -5  # Negative weight
-
-            # # Add topic modeling metrics
-            # 'topic_diversity': 5,          # Reward establishments with diverse discussion topics
-            # 'topic_coherence': 3,          # Reward establishments with clear, coherent topics
-            # 'sentiment_variance': -2,      # Penalize high variance in sentiment across topics
-            # 'sentiment_topic_divergence': 5  # Reward clear distinction between positive/negative topics
+            'authenticity_concerns': -5,  # Keep negative weight
+            'avg_cluster_similarity': -2.5,  # New metric
+            'similar_review_rate': -2.5,  # New metric
         }
                 
         # Create a copy of the metrics dataframe for scoring
@@ -1495,6 +1698,7 @@ class ReviewAnalyzer:
         self.analyze_named_entities()
         self.analyze_temporal_patterns()
         self.detect_review_authenticity()
+        self.analyze_similarity_outliers()
         self.analyze_comparative_references()
         self.analyze_customer_journey()
         self.analyze_complaint_resolution()
@@ -1506,6 +1710,9 @@ class ReviewAnalyzer:
     def save_results(self, output_dir='.'):
         """Save analysis results to Excel files."""
         print("Saving results...")
+
+        # Get current date and time for file naming
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create output directory if it doesn't exist
         import os
@@ -1513,20 +1720,87 @@ class ReviewAnalyzer:
         
         # Save main results
         if self.results_df is not None:
-            self.results_df.to_excel(f"{output_dir}/establishment_rankings.xlsx", index=False)
-            print(f"Rankings saved to {output_dir}/establishment_rankings.xlsx")
+            self.results_df.to_excel(f"{output_dir}/establishment_rankings_{timestamp}.xlsx", index=False)
+            print(f"Rankings saved to {output_dir}/establishment_rankings_{timestamp}.xlsx")
         
         # Save full metrics
         if self.metrics_df is not None:
-            self.metrics_df.to_excel(f"{output_dir}/establishment_metrics.xlsx", index=False)
-            print(f"Full metrics saved to {output_dir}/establishment_metrics.xlsx")
+            self.metrics_df.to_excel(f"{output_dir}/establishment_metrics_{timestamp}.xlsx", index=False)
+            print(f"Full metrics saved to {output_dir}/establishment_metrics_{timestamp}.xlsx")
         
         # Save insights as JSON
         if self.insights is not None:
             import json
-            with open(f"{output_dir}/establishment_insights.json", 'w') as f:
+            with open(f"{output_dir}/establishment_insights_{timestamp}.json", 'w') as f:
                 json.dump(self.insights, f, indent=2)
-            print(f"Insights saved to {output_dir}/establishment_insights.json")
+            print(f"Insights saved to {output_dir}/establishment_insights_{timestamp}.json")
+        
+        print("All results saved successfully")
+    
+    def save_results(self, output_dir='.'):
+        """Save analysis results to Excel files."""
+        print("Saving results...")
+
+        # Get current date and time for file naming
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create output directory if it doesn't exist
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save main results with scoring components
+        if self.results_df is not None:
+            # Get the columns used in scoring
+            scoring_columns = [
+                # Rating and volume
+                'avg_rating', 'rating_consistency',
+                
+                # Overall sentiment
+                'avg_sentiment', 'positive_review_pct', 'sentiment_trend',
+                
+                # Aspects' sentiments
+                'service_sentiment', 'quality_sentiment', 'price_sentiment', 'response_rate',
+                
+                # Customer loyalty
+                'customer_loyalty_score',
+                
+                # Temporal factors
+                'recent_reviews_pct', 'rating_trend',
+                
+                # Authenticity and trustworthiness
+                'verified_reviewer_pct', 'authenticity_concerns', 
+                'avg_cluster_similarity', 'similar_review_rate'
+            ]
+            
+            # Create enhanced results with scoring fields
+            enhanced_results = self.results_df.copy()
+            
+            # Add each scoring column from metrics_df to the results
+            for col in scoring_columns:
+                if col in self.metrics_df.columns:
+                    enhanced_results[col] = self.metrics_df.set_index('placeId').loc[enhanced_results['placeId'], col].values
+            
+            # Add normalized values for better understanding
+            for col in scoring_columns:
+                norm_col = f"{col}_normalized"
+                if norm_col in self.metrics_df.columns:
+                    enhanced_results[f"{col}_normalized"] = self.metrics_df.set_index('placeId').loc[enhanced_results['placeId'], norm_col].values
+            
+            # Save to Excel
+            enhanced_results.to_excel(f"{output_dir}/establishment_rankings_{timestamp}.xlsx", index=False)
+            print(f"Enhanced rankings with scoring details saved to {output_dir}/establishment_rankings_{timestamp}.xlsx")
+        
+        # Save full metrics
+        if self.metrics_df is not None:
+            self.metrics_df.to_excel(f"{output_dir}/establishment_metrics_{timestamp}.xlsx", index=False)
+            print(f"Full metrics saved to {output_dir}/establishment_metrics_{timestamp}.xlsx")
+        
+        # Save insights as JSON
+        if self.insights is not None:
+            import json
+            with open(f"{output_dir}/establishment_insights_{timestamp}.json", 'w') as f:
+                json.dump(self.insights, f, indent=2)
+            print(f"Insights saved to {output_dir}/establishment_insights_{timestamp}.json")
         
         print("All results saved successfully")
 
