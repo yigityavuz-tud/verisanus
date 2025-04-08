@@ -1,8 +1,10 @@
-# version: 1.2.0
-# TODO: 
-# -Increase local guide weights
-# -Add complaint resolution to composite score calculation
-# -Move composite score weights to config file
+# version: 1.1.0
+# Added cluster text similarity analysis
+# Added text similarity outlier detection
+# Updated the weights for composite score calculation
+# Changed file saving naming convention to include date and time
+# Improved the ranking file for easier interpretation with the fields that make up the composite score
+# Added version summary
 
 import pandas as pd
 import numpy as np
