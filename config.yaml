@@ -26,11 +26,11 @@ trustpilot:
     scrape_unscraped: false  # Whether to scrape establishments that haven't been scraped yet
     scrape_before_date: "2024-04-07"  # Only scrape establishments scraped before this date
     max_establishments: 500
-    custom_place_ids: []
+    custom_place_ids: ["ChIJW40wCG-2yhQRuPTD5f7bqIc"]
 
   api_settings:
     translate: false
-    apify_token_file: "tokens/apify_token_dev.txt"
+    apify_token_file: "tokens/apify_token_dev2.txt"
     deepl_token_file: "tokens/deepl_token_dev.txt"
     deepseek_token_file: "tokens/deepseek_api_key.txt"
     translation_service: "deepseek"  # "deepl" or "deepseek"
@@ -42,3 +42,37 @@ trustpilot:
     sort: "recency"
     startPage: 1
     verified: false
+
+analysis:
+  composite_score_weights:
+    # Rating and volume (30%)
+    avg_rating: 17.5  # Reduced from 20
+    total_reviews: 7.5
+    rating_consistency: 5
+    
+    # Sentiment removed from the composite score calculation
+    # Using aspect based sentiment instead
+
+    # Aspects sentiments (20%)
+    service_sentiment: 7.5  # Reduced from 10
+    quality_sentiment: 7.5  # Reduced from 10
+    price_sentiment: 5
+    # response_rate: 5  # Reduced from 5 to 0, while responding to each review is not necessary
+    
+    # Customer loyalty (5%)
+    customer_loyalty_score: 5  # Reduced from 10
+    
+    # Temporal factors (15%)
+    recent_reviews_pct: 10 
+    rating_trend: 5
+    
+    # Authenticity and trustworthiness (15%)
+    verified_reviewer_pct: 5
+    authenticity_concerns: -5
+    avg_cluster_similarity: -2.5
+    similar_review_rate: -2.5
+
+    # Communication and resolution (15%)
+    complaint_rate: -5
+    complaint_response_rate: 5
+    resolution_language_rate: 5
