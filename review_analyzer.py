@@ -1,10 +1,8 @@
-# version: 1.1.0
-# Added cluster text similarity analysis
-# Added text similarity outlier detection
-# Updated the weights for composite score calculation
-# Changed file saving naming convention to include date and time
-# Improved the ranking file for easier interpretation with the fields that make up the composite score
-# Added version summary
+# version: 1.2.0
+# TODO: 
+# -Increase local guide weights
+# -Add complaint resolution to composite score calculation
+# -Move composite score weights to config file
 
 import pandas as pd
 import numpy as np
@@ -26,12 +24,17 @@ import math
 from scipy.stats import entropy
 from textblob import TextBlob
 import openpyxl
+import yaml
 
 # Download necessary NLTK resources
 nltk.download('vader_lexicon')
 nltk.download('punkt')
 nltk.download('stopwords')
 nltk.download('wordnet')
+
+def load_config():
+    with open('config.yaml', 'r') as file:
+        return yaml.safe_load(file)
 
 # Load spaCy model for NER and language processing
 nlp = spacy.load('en_core_web_sm')
@@ -53,6 +56,7 @@ class ReviewAnalyzer:
         establishment_file : str
             Path to the establishment base data CSV file
         """
+        self.config = load_config()["analysis"]
         self.google_maps_file = google_maps_file
         self.trustpilot_file = trustpilot_file
         self.establishment_file = establishment_file
@@ -244,9 +248,16 @@ class ReviewAnalyzer:
         print(f"Filtered out {filtered_count} reviews unrelated to hair transplantation")
         print(f"Remaining reviews: {len(self.combined_reviews)}")
 
+    def calculate_weighted_average(self, values, weights):
+        """Calculate weighted average of values based on weights."""
+        return sum(v * w for v, w in zip(values, weights)) / sum(weights)
+
     def calculate_basic_metrics(self):
-        """Calculate basic metrics for each establishment."""
+        """Calculate basic metrics with higher weights for local guides."""
         print("Calculating basic metrics...")
+        
+        # Set the weight multiplier for local guides
+        local_guide_weight = 1.2  # Local guides get 20% more weight
         
         metrics = []
         
@@ -266,12 +277,16 @@ class ReviewAnalyzer:
             total_reviews = len(place_reviews)
             google_review_count = len(google_reviews)
             trustpilot_review_count = len(trustpilot_reviews)
+
+            # Apply weights based on local guide status
+            weights = [local_guide_weight if is_guide else 1.0 
+                  for is_guide in place_reviews['isLocalGuide']]
             
             # Rating metrics
-            avg_rating = place_reviews['rating'].mean()
+            avg_rating = self.calculate_weighted_average(place_reviews['rating'], weights)
             google_avg_rating = google_reviews['rating'].mean() if len(google_reviews) > 0 else np.nan
             trustpilot_avg_rating = trustpilot_reviews['rating'].mean() if len(trustpilot_reviews) > 0 else np.nan
-            rating_std = place_reviews['rating'].std() if len(place_reviews) > 1 else 0
+            rating_std = np.sqrt(self.calculate_weighted_average((place_reviews['rating'] - avg_rating)**2, weights))
             
             # Rating distribution (percentage in each star category)
             rating_dist = {}
@@ -331,7 +346,7 @@ class ReviewAnalyzer:
         return self.metrics_df
         
     def calculate_sentiment_metrics(self):
-        """Calculate sentiment metrics for each establishment."""
+        """Calculate sentiment metrics with higher weights for local guides."""
         print("Calculating sentiment metrics...")
         
         # Create placeholders for sentiment data
@@ -357,7 +372,9 @@ class ReviewAnalyzer:
             else:
                 self.combined_reviews.at[idx, 'sentiment_category'] = 'neutral'
         
-        # Calculate sentiment metrics for each establishment
+        # Set the weight multiplier for local guides
+        local_guide_weight = 1.2  # Local guides get 20% more weight
+        
         sentiment_metrics = []
         
         for place_id in self.metrics_df['placeId']:
@@ -366,9 +383,13 @@ class ReviewAnalyzer:
             if len(place_reviews) == 0:
                 continue
                 
-            # Overall sentiment metrics
-            avg_sentiment = place_reviews['sentiment_score'].mean()
-            sentiment_std = place_reviews['sentiment_score'].std() if len(place_reviews) > 1 else 0
+            # Apply weights based on local guide status
+            weights = [local_guide_weight if is_guide else 1.0 
+                    for is_guide in place_reviews['isLocalGuide']]
+            
+            # Calculate weighted sentiment metrics
+            avg_sentiment = self.calculate_weighted_average(place_reviews['sentiment_score'], weights)
+            sentiment_std = np.sqrt(self.calculate_weighted_average((place_reviews['sentiment_score'] - avg_sentiment)**2, weights))
             
             # Sentiment categories
             sentiment_categories = place_reviews['sentiment_category'].value_counts(normalize=True).to_dict()
@@ -417,6 +438,9 @@ class ReviewAnalyzer:
             text = text.lower()
             return any(keyword in text for keyword in aspect_keywords)
         
+        # Set the weight multiplier for local guides
+        local_guide_weight = 1.2  # Local guides get 20% more weight
+
         # Calculate aspect sentiment for each review
         for aspect, keywords in self.aspects.items():
             aspect_col = f'has_{aspect}'
@@ -465,7 +489,11 @@ class ReviewAnalyzer:
                 # Average sentiment for this aspect
                 aspect_reviews = place_reviews[place_reviews[aspect_col] == True]
                 if len(aspect_reviews) > 0:
-                    avg_aspect_sentiment = aspect_reviews[sentiment_col].mean()
+                    # Apply weights based on local guide status
+                    weights = [local_guide_weight if is_guide else 1.0 
+                            for is_guide in aspect_reviews['isLocalGuide']]
+                    avg_aspect_sentiment = self.calculate_weighted_average(
+                        aspect_reviews[f'{aspect}_sentiment'], weights)
                     aspect_data[f'{aspect}_sentiment'] = avg_aspect_sentiment
                 else:
                     aspect_data[f'{aspect}_sentiment'] = np.nan
@@ -1507,41 +1535,13 @@ class ReviewAnalyzer:
             return None
         
         # Define weights for different metric categories
-        weights = {
-            # Rating and volume (20%)
-            'avg_rating': 15,  # Reduced from 20
-            'rating_consistency': 5,
-            
-            # Overall sentiment (22.5%)
-            'avg_sentiment': 10,
-            'positive_review_pct': 7.5,
-            'sentiment_trend': 5,
-            
-            # Aspects' sentiments (25%)
-            'service_sentiment': 8,  # Reduced from 10
-            'quality_sentiment': 8,  # Reduced from 10
-            'price_sentiment': 5,
-            'response_rate': 5,  # Reduced from 5
-            
-            # Customer loyalty (8%)
-            'customer_loyalty_score': 8,  # Reduced from 10
-            
-            # Temporal factors (7.5%)
-            'recent_reviews_pct': 5,  # Reduced from 5
-            'rating_trend': 3.5,  # Reduced from 5
-            
-            # Authenticity and trustworthiness (15% - increased from 10%)
-            'verified_reviewer_pct': 5,
-            'authenticity_concerns': -5,  # Keep negative weight
-            'avg_cluster_similarity': -2.5,  # New metric
-            'similar_review_rate': -2.5,  # New metric
-        }
+        self.composite_score_weights = self.config["composite_score_weights"]
                 
         # Create a copy of the metrics dataframe for scoring
         score_df = self.metrics_df.copy()
         
         # Normalize numerical features to 0-1 scale
-        for column in weights.keys():
+        for column in self.composite_score_weights.keys():
             if column in score_df.columns and column != 'authenticity_concerns':
                 # Skip non-numeric columns
                 if not np.issubdtype(score_df[column].dtype, np.number):
@@ -1566,7 +1566,7 @@ class ReviewAnalyzer:
         # Calculate weighted score
         score_df['composite_score'] = 0
         
-        for column, weight in weights.items():
+        for column, weight in self.composite_score_weights.items():
             normalized_col = column + '_normalized'
             if normalized_col in score_df.columns:
                 score_df['composite_score'] += score_df[normalized_col] * weight
@@ -1751,26 +1751,7 @@ class ReviewAnalyzer:
         # Save main results with scoring components
         if self.results_df is not None:
             # Get the columns used in scoring
-            scoring_columns = [
-                # Rating and volume
-                'avg_rating', 'rating_consistency',
-                
-                # Overall sentiment
-                'avg_sentiment', 'positive_review_pct', 'sentiment_trend',
-                
-                # Aspects' sentiments
-                'service_sentiment', 'quality_sentiment', 'price_sentiment', 'response_rate',
-                
-                # Customer loyalty
-                'customer_loyalty_score',
-                
-                # Temporal factors
-                'recent_reviews_pct', 'rating_trend',
-                
-                # Authenticity and trustworthiness
-                'verified_reviewer_pct', 'authenticity_concerns', 
-                'avg_cluster_similarity', 'similar_review_rate'
-            ]
+            scoring_columns = self.composite_score_weights.keys()
             
             # Create enhanced results with scoring fields
             enhanced_results = self.results_df.copy()
