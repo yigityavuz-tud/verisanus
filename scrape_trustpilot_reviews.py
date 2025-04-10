@@ -19,8 +19,6 @@ def get_apify_token(token_file):
     except FileNotFoundError:
         raise ValueError(f"Token file {token_file} not found. Please check the config file.")
 
-# Remove get_deepl_token as it's in translation_utils now
-
 def generate_review_id(company_domain, published_at):
     return hashlib.md5(f"{company_domain}_{published_at}".encode()).hexdigest()
 
@@ -289,6 +287,7 @@ def unify_reviews():
     if latest_unified:
         latest_unified = max(latest_unified)
         existing_df = pd.read_excel(latest_unified)
+        print(f"Loaded existing unified reviews from {latest_unified}")
         # Ensure all required columns exist in the existing DataFrame
         for col in required_columns:
             if col not in existing_df.columns:
@@ -360,8 +359,10 @@ def update_establishment_base():
 
     # Count the number of reviews for each placeId
     trustpilotReviewCount = reviews_df.groupby('placeId').size().reset_index(name='trustpilotReviewCount')
+    print(f"Number of reviews per establishment: {trustpilotReviewCount}")
     
-    # Merge the review counts into the establishment base
+    # Merge the review counts into the establishment base excluding the trustpilotReviewCount column
+    base_df = base_df.drop(columns=['trustpilotReviewCount'], errors='ignore')
     base_df = base_df.merge(trustpilotReviewCount, on='placeId', how='left')
     
     # Fill NaN values in reviewCount with 0 (for establishments with no reviews)

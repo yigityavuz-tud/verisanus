@@ -10,7 +10,7 @@ google_maps:
   
   api_settings:
     translate: false  # Whether to translate reviews
-    apify_token_file: "tokens/apify_token_dev1.txt"
+    apify_token_file: "tokens/apify_token_dev2.txt"
     deepl_token_file: "tokens/deepl_token_dev.txt"
     deepseek_token_file: "tokens/deepseek_api_key.txt"
     translation_service: "deepseek"  # "deepl" or "deepseek"

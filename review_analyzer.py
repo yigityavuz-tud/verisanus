@@ -67,10 +67,9 @@ class ReviewAnalyzer:
         
         # Define business aspects for aspect-based sentiment analysis
         self.aspects = {
-            'service': ['service', 'staff', 'employee', 'waiter', 'waitress', 'server', 'customer service'],
+            'service': ['service', 'staff', 'employee', 'customer service'],
             'quality': ['quality', 'excellent', 'great', 'good', 'bad', 'poor', 'terrible'],
             'price': ['price', 'cost', 'expensive', 'cheap', 'affordable', 'value', 'money'],
-            'ambiance': ['ambiance', 'atmosphere', 'environment', 'decor', 'music', 'noise', 'quiet'],
             'cleanliness': ['clean', 'dirty', 'filthy', 'hygiene', 'sanitary', 'neat', 'tidy'],
             'location': ['location', 'area', 'neighborhood', 'parking', 'accessible', 'central']
         }
