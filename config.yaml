@@ -76,3 +76,7 @@ analysis:
     complaint_rate: -5
     complaint_response_rate: 5
     resolution_language_rate: 5
+
+  # Filtering settings
+  filtering:
+    min_reviews_threshold: 50  # Minimum number of reviews required for an establishment to be included in analysis

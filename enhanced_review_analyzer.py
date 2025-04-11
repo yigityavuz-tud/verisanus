@@ -53,6 +53,7 @@ from scipy.stats import entropy
 from textblob import TextBlob
 import openpyxl
 import yaml
+import os
 
 # Download necessary NLTK resources
 nltk.download('vader_lexicon')
@@ -67,7 +68,7 @@ nlp = spacy.load('en_core_web_sm')
 warnings.filterwarnings('ignore')
 
 class EnhancedReviewAnalyzer:
-    def __init__(self, google_maps_file, trustpilot_file, establishment_file):
+    def __init__(self, google_maps_file, trustpilot_file, establishment_file, config_file='config.yaml'):
         """
         Initialize the EnhancedReviewAnalyzer with the paths to the data files.
         
@@ -79,10 +80,16 @@ class EnhancedReviewAnalyzer:
             Path to the Trustpilot reviews CSV file
         establishment_file : str
             Path to the establishment base data CSV file
+        config_file : str
+            Path to the configuration file
         """
         self.google_maps_file = google_maps_file
         self.trustpilot_file = trustpilot_file
         self.establishment_file = establishment_file
+        
+        # Load configuration
+        with open(config_file, 'r') as f:
+            self.config = yaml.safe_load(f)
         
         # Initialize sentiment analyzer
         self.sia = SentimentIntensityAnalyzer()
@@ -1262,11 +1269,40 @@ class EnhancedReviewAnalyzer:
         print(f"Composite Score calculated for {len(self.results_df)} establishments")
         return self.results_df
     
+    def filter_establishments_by_review_count(self):
+        """
+        Filter out establishments that have fewer reviews than the minimum threshold.
+        Updates the combined_reviews DataFrame to only include establishments that meet the threshold.
+        """
+        print("Filtering establishments by review count...")
+        
+        # Get the minimum review threshold from config
+        min_reviews_threshold = self.config['analysis']['filtering']['min_reviews_threshold']
+        
+        # Count reviews per establishment
+        review_counts = self.combined_reviews['placeId'].value_counts()
+        
+        # Get establishments that meet the threshold
+        valid_establishments = review_counts[review_counts >= min_reviews_threshold].index
+        
+        # Filter the combined_reviews DataFrame
+        initial_count = len(self.combined_reviews)
+        self.combined_reviews = self.combined_reviews[self.combined_reviews['placeId'].isin(valid_establishments)]
+        
+        # Print statistics
+        removed_count = initial_count - len(self.combined_reviews)
+        print(f"Removed {removed_count} reviews from establishments with fewer than {min_reviews_threshold} reviews")
+        print(f"Remaining reviews: {len(self.combined_reviews)}")
+        print(f"Remaining establishments: {len(valid_establishments)}")
+
     def run_analysis(self):
         """Run the full enhanced analysis pipeline."""
         self.detect_review_authenticity()
         # Analyze authenticity clusters
         self.analyze_authenticity_clusters()
+        
+        # Filter establishments by review count
+        self.filter_establishments_by_review_count()
         
         # Calculate all required metrics
         self.calculate_weighted_rating_score()
@@ -1288,7 +1324,6 @@ class EnhancedReviewAnalyzer:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create output directory if it doesn't exist
-        import os
         os.makedirs(output_dir, exist_ok=True)
         
         # Save main results
@@ -1327,6 +1362,76 @@ class EnhancedReviewAnalyzer:
         print(f"Detailed metrics saved to {output_dir}/establishment_detailed_metrics_{timestamp}.xlsx")
         
         print("All results saved successfully")
+
+    def update_clinics_cms_template(self, analysis_dir='analysis_results', template_path='website_uploads/clinics_cms_template.csv'):
+        """
+        Creates a new clinics CMS file based on the latest establishment rankings.
+        
+        Parameters:
+        -----------
+        analysis_dir : str
+            Directory containing the analysis results
+        template_path : str
+            Path to the clinics CMS template CSV file (used as schema reference)
+        """
+        print("Creating new clinics CMS file from latest rankings...")
+        
+        # Get the latest establishment rankings file
+        ranking_files = [f for f in os.listdir(analysis_dir) if f.startswith('establishment_rankings_') and f.endswith('.xlsx')]
+        if not ranking_files:
+            print("No establishment rankings files found in the specified directory")
+            return
+            
+        # Sort files by modification time to get the latest
+        latest_ranking = max(ranking_files, key=lambda x: os.path.getmtime(os.path.join(analysis_dir, x)))
+        ranking_path = os.path.join(analysis_dir, latest_ranking)
+        
+        # Load the rankings and template
+        rankings_df = pd.read_excel(ranking_path)
+        template_df = pd.read_csv(template_path)
+        
+        # Create a new DataFrame with the template schema
+        new_cms_df = pd.DataFrame(columns=template_df.columns)
+        
+        # Fill in the data from rankings
+        for _, row in rankings_df.iterrows():
+            # Find matching establishment in template (if exists)
+            template_match = template_df[template_df['Name'].str.lower() == row['establishment_name'].lower()]
+            
+            # Create new row with template schema
+            new_row = {
+                'Name': row['establishment_name'],
+                'Slug': template_match['Slug'].iloc[0] if not template_match.empty else row['establishment_name'].lower().replace(' ', '-'),
+                'Collection ID': template_match['Collection ID'].iloc[0] if not template_match.empty else '',
+                'Locale ID': template_match['Locale ID'].iloc[0] if not template_match.empty else '',
+                'Item ID': template_match['Item ID'].iloc[0] if not template_match.empty else '',
+                'Created On': template_match['Created On'].iloc[0] if not template_match.empty else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Updated On': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Published On': template_match['Published On'].iloc[0] if not template_match.empty else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Establishment Picture': template_match['Establishment Picture'].iloc[0] if not template_match.empty else '',
+                'Rank': row['rank'],
+                'Score': row['final_score'],
+                'Total Reviews': row['total_reviews'],
+                'Weighted Average Rating': row['weighted_avg_rating'],
+                'Communication Score': row['communication_score']*100,
+                'Service Score': row['service_score']*100,
+                'Affordability Score': row['affordability_score']*100,
+                'Recommendation Score': row['recommendation_score']*100,
+                'Website': template_match['Website'].iloc[0] if not template_match.empty else '',
+                'E-mail': template_match['E-mail'].iloc[0] if not template_match.empty else '',
+                'Phone': template_match['Phone'].iloc[0] if not template_match.empty else ''
+            }
+            
+            new_cms_df = pd.concat([new_cms_df, pd.DataFrame([new_row])], ignore_index=True)
+        
+        # Generate output filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(os.path.dirname(template_path), f'clinics_cms_{timestamp}.csv')
+        
+        # Save the new CMS file
+        new_cms_df.to_csv(output_path, index=False)
+        print(f"New clinics CMS file created successfully: {output_path}")
+        print(f"Based on rankings from: {latest_ranking}")
 
 
 # Example usage
